@@ -10,7 +10,7 @@ from .search.search import UnifiedSearcher, SearchResult
 from .research.researcher import DeepResearcher, ResearchResult
 from .agents.agent import ResearchAgent
 
-__version__ = "1.5.2"
+__version__ = "2.0.0"
 __all__ = [
     "UnifiedSearcher",
     "SearchResult",
