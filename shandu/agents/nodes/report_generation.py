@@ -1,9 +1,12 @@
-"""Report generation nodes."""
+"""Report generation nodes with modular, robust processing."""
 import re
 import time
 import asyncio
+import traceback
+from typing import List, Dict, Any, Optional, Tuple
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.progress import Progress, SpinnerColumn, TextColumn
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel, Field
 from ..processors.content_processor import AgentState
@@ -26,6 +29,8 @@ class ReportSection(BaseModel):
     """Structured output for a report section."""
     title: str = Field(description="Title of the section")
     content: str = Field(description="Content of the section")
+    order: int = Field(description="Order of the section in the report", default=0)
+    status: str = Field(description="Processing status of the section", default="pending")
 
 class FinalReport(BaseModel):
     """Structured output for the final report."""
@@ -38,14 +43,21 @@ class FinalReport(BaseModel):
         description="List of references in the report",
         min_items=0
     )
+    
+# Maximum retry attempts for report generation processes
+MAX_RETRIES = 3
 
-async def generate_initial_report_node(llm, include_objective, progress_callback, state: AgentState) -> AgentState:
-    """Generate the initial report with enhanced citation tracking."""
-    state["status"] = "Generating initial report with enhanced source attribution"
-    console.print("[bold blue]Generating comprehensive report with dynamic structure and source tracking...[/]")
-
-    current_date = state["current_date"]
-
+async def prepare_report_data(state: AgentState) -> Tuple[CitationManager, CitationRegistry, Dict[str, Any]]:
+    """
+    Prepare all necessary data for report generation, ensuring sources are correctly registered.
+    
+    Args:
+        state: The current agent state
+        
+    Returns:
+        Tuple containing the citation manager, citation registry, and citation statistics
+    """
+    # Initialize or retrieve citation manager
     if "citation_manager" not in state:
         citation_manager = CitationManager()
         state["citation_manager"] = citation_manager
@@ -55,11 +67,10 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
         citation_manager = state["citation_manager"]
 
     citation_registry = citation_manager.citation_registry
-    
+
     # Pre-register all selected sources and extract learnings
     if "selected_sources" in state and state["selected_sources"]:
         for url in state["selected_sources"]:
-
             source_meta = next((s for s in state["sources"] if s.get("url") == url), {})
 
             source_info = SourceInfo(
@@ -78,13 +89,12 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
 
             for analysis in state["content_analysis"]:
                 if url in analysis.get("sources", []):
-
                     citation_manager.extract_learning_from_text(
-                        analysis.get("analysis", ""), 
+                        analysis.get("analysis", ""),
                         url,
                         context=f"Analysis for query: {analysis.get('query', '')}"
                     )
-            
+
             # For backward compatibility with citation registry
             cid = citation_registry.register_citation(url)
             citation_registry.update_citation_metadata(cid, {
@@ -93,42 +103,115 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
                 "url": url
             })
 
-    report_title = await generate_title(llm, state['query'])
-    console.print(f"[bold green]Generated title: {report_title}[/]")
-
-    extracted_themes = await extract_themes(llm, state['findings'])
-
     citation_stats = citation_manager.get_learning_statistics()
     console.print(f"[bold green]Processed {citation_stats.get('total_learnings', 0)} learnings from {citation_stats.get('total_sources', 0)} sources[/]")
-
-    formatted_citations = await format_citations(
-        llm, 
-        state.get('selected_sources', []), 
-        state["sources"],
-        citation_registry  # For compatibility with format_citations function
-    )
-
-    initial_report = await generate_initial_report(
-        llm,
-        state['query'],
-        state['findings'],
-        extracted_themes,
-        report_title,
-        state['selected_sources'],
-        formatted_citations,
-        current_date,
-        state['detail_level'],
-        include_objective,
-        citation_registry  # For compatibility with existing function
-    )
     
-    # Store the themes for later expansion steps
+    return citation_manager, citation_registry, citation_stats
+
+
+async def generate_initial_report_node(llm, include_objective, progress_callback, state: AgentState) -> AgentState:
+    """Generate the initial report with enhanced citation tracking using a modular approach."""
+    state["status"] = "Generating initial report with enhanced source attribution"
+    console.print("[bold blue]Generating comprehensive report with dynamic structure and source tracking...[/]")
+
+    current_date = state["current_date"]
+    
+    # Prepare all citation data
+    citation_manager, citation_registry, citation_stats = await prepare_report_data(state)
+
+    # Step 1: Generate report title (with retries)
+    report_title = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            report_title = await generate_title(llm, state['query'])
+            console.print(f"[bold green]Generated title: {report_title}[/]")
+            break
+        except Exception as e:
+            console.print(f"[yellow]Title generation attempt {attempt+1} failed: {str(e)}[/]")
+            if attempt == MAX_RETRIES - 1:
+                report_title = f"Research on {state['query']}"
+                console.print(f"[yellow]Using fallback title: {report_title}[/]")
+
+    # Step 2: Extract themes to structure the report (with retries)
+    extracted_themes = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            extracted_themes = await extract_themes(llm, state['findings'])
+            break
+        except Exception as e:
+            console.print(f"[yellow]Theme extraction attempt {attempt+1} failed: {str(e)}[/]")
+            if attempt == MAX_RETRIES - 1:
+                # Create fallback themes if all attempts fail
+                extracted_themes = "## Main Concepts\nCore concepts related to the topic.\n\n## Applications\nPractical applications and implementations.\n\n## Challenges\nChallenges and limitations in the field.\n\n## Future Directions\nEmerging trends and future possibilities."
+                console.print("[yellow]Using fallback themes structure[/]")
+
+    # Step 3: Format citations (with retries)
+    formatted_citations = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            formatted_citations = await format_citations(
+                llm,
+                state.get('selected_sources', []),
+                state["sources"],
+                citation_registry
+            )
+            break
+        except Exception as e:
+            console.print(f"[yellow]Citation formatting attempt {attempt+1} failed: {str(e)}[/]")
+            if attempt == MAX_RETRIES - 1:
+                # Create basic citations if all attempts fail
+                formatted_citations = "\n".join([f"[{i+1}] {url}" for i, url in enumerate(state.get('selected_sources', []))])
+                console.print("[yellow]Using fallback citation format[/]")
+
+    # Step 4: Generate the initial report with progress tracking
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]Generating report..."),
+        console=console
+    ) as progress:
+        task = progress.add_task("Generating", total=1)
+        
+        initial_report = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                initial_report = await generate_initial_report(
+                    llm,
+                    state['query'],
+                    state['findings'],
+                    extracted_themes,
+                    report_title,
+                    state['selected_sources'],
+                    formatted_citations,
+                    current_date,
+                    state['detail_level'],
+                    include_objective,
+                    citation_registry
+                )
+                progress.update(task, completed=1)
+                break
+            except Exception as e:
+                console.print(f"[yellow]Report generation attempt {attempt+1} failed: {str(e)}[/]")
+                if attempt == MAX_RETRIES - 1:
+                    # Create a minimal report if all attempts fail
+                    console.print("[yellow]Creating fallback report structure[/]")
+                    initial_report = f"# {report_title}\n\n## Executive Summary\n\nThis report explores {state['query']}.\n\n"
+                    
+                    # Extract sections from themes
+                    section_matches = re.findall(r"##\s+([^\n]+)(?:\n([^#]+))?", extracted_themes)
+                    for title, content in section_matches:
+                        initial_report += f"## {title}\n\n{content.strip() if content else 'Information on this topic.'}\n\n"
+                    
+                    initial_report += "## References\n\n" + formatted_citations
+                    progress.update(task, completed=1)
+
+    # Store data for later stages
     state["identified_themes"] = extracted_themes
     state["initial_report"] = initial_report
     state["formatted_citations"] = formatted_citations
-    
+    state["report_title"] = report_title
+
     log_chain_of_thought(
-        state, 
+        state,
         f"Generated initial report with {len(citation_registry.citations)} properly tracked citations and {citation_stats.get('total_learnings', 0)} learnings"
     )
     
@@ -138,19 +221,136 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
 
 async def enhance_report_node(llm, progress_callback, state: AgentState) -> AgentState:
     """
-    Skip enhancement step to avoid duplicating content - this function now
-    just passes through the initial report to maintain pipeline compatibility.
+    Enhance the report by processing each section individually to improve reliability.
     """
-
     if is_shutdown_requested():
         state["status"] = "Shutdown requested, skipping report enhancement"
         log_chain_of_thought(state, "Shutdown requested, skipping report enhancement")
         return state
+
+    state["status"] = "Enhancing report sections"
+    console.print("[bold blue]Enhancing report with more detailed information...[/]")
     
-    # Simply use the initial report without enhancement to avoid duplication issues
-    state["enhanced_report"] = state["initial_report"]
-    state["status"] = "Enhancement step skipped to preserve report structure"
-    log_chain_of_thought(state, "Enhancement step skipped to preserve report structure")
+    initial_report = state.get("initial_report", "")
+    if not initial_report or len(initial_report.strip()) < 500:
+        log_chain_of_thought(state, "Initial report too short or missing, skipping enhancement")
+        state["enhanced_report"] = initial_report
+        return state
+    
+    # Extract report title and sections
+    title_match = re.match(r'# ([^\n]+)', initial_report)
+    original_title = title_match.group(1) if title_match else state.get("report_title", "Research Report")
+    
+    # Extract sections using regex pattern
+    section_pattern = re.compile(r'(#+\s+[^\n]+)(\n\n[^#]+?)(?=\n#+\s+|\Z)', re.DOTALL)
+    sections = section_pattern.findall(initial_report)
+    
+    if not sections:
+        log_chain_of_thought(state, "No sections found in report, using initial report as is")
+        state["enhanced_report"] = initial_report
+        return state
+
+    # Process each section in parallel for better reliability
+    enhanced_sections = []
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]Enhancing sections..."),
+        console=console
+    ) as progress:
+        task = progress.add_task("Enhancing", total=len(sections))
+        
+        # Prepare citation information for enhancement
+        citation_registry = state.get("citation_registry")
+        formatted_citations = state.get("formatted_citations", "")
+        current_date = state.get("current_date", "")
+        
+        # Process each section (excluding references)
+        for i, (section_header, section_content) in enumerate(sections):
+            # Skip enhancing references section
+            if "References" in section_header or "references" in section_header.lower():
+                enhanced_sections.append((i, f"{section_header}{section_content}"))
+                progress.update(task, advance=1)
+                continue
+                
+            for attempt in range(MAX_RETRIES):
+                try:
+                    # Generate available sources text for this section
+                    available_sources_text = ""
+                    if citation_registry:
+                        available_sources = []
+                        for cid in sorted(citation_registry.citations.keys()):
+                            citation_info = citation_registry.citations[cid]
+                            url = citation_info.get("url", "")
+                            title = citation_info.get("title", "")
+                            available_sources.append(f"[{cid}] - {title} ({url})")
+                        
+                        if available_sources:
+                            available_sources_text = "\n\nAVAILABLE SOURCES FOR CITATION:\n" + "\n".join(available_sources)
+                    
+                    # Configure LLM for this section enhancement
+                    enhance_llm = llm.with_config({"max_tokens": 4096, "temperature": 0.2})
+                    
+                    # Create section-specific enhancement prompt
+                    section_prompt = f"""Enhance this section of a research report with additional depth and detail:
+
+{section_header}{section_content}{available_sources_text}
+
+Your task is to:
+1. Add more detailed explanations to key concepts
+2. Expand on examples and case studies
+3. Enhance the analysis and interpretation of findings
+4. Improve the flow within this section
+5. Add relevant statistics, data points, or evidence
+6. Ensure proper citation [n] format throughout
+7. Maintain scientific accuracy and up-to-date information (current as of {current_date})
+
+CITATION REQUIREMENTS:
+- ONLY use the citation IDs provided in the AVAILABLE SOURCES list above
+- Format citations as [n] where n is the exact ID of the source
+- Place citations at the end of the relevant sentences or paragraphs
+- Do not make up your own citation numbers
+- Do not cite sources that aren't in the available sources list
+
+IMPORTANT:
+- DO NOT change the section heading
+- DO NOT add information not supported by the research
+- DO NOT use academic-style citations like "Journal of Medicine (2020)"
+- DO NOT include PDF/Text/ImageB/ImageC/ImageI tags or any other markup
+- Return ONLY the enhanced section with the original heading
+
+Return the enhanced section with the exact same heading but with expanded content.
+"""
+                    # Enhance the section
+                    response = await enhance_llm.ainvoke(section_prompt)
+                    section_text = response.content
+                    
+                    # Clean up any markup errors
+                    section_text = re.sub(r'\[\/?(?:PDF|Text|ImageB|ImageC|ImageI)(?:\/?|\])(?:[^\]]*\])?', '', section_text)
+                    
+                    # Ensure the section starts with the correct header
+                    if not section_text.strip().startswith(section_header.strip()):
+                        section_text = f"{section_header}\n\n{section_text}"
+                    
+                    # Store the enhanced section with its original position
+                    enhanced_sections.append((i, section_text))
+                    break
+                    
+                except Exception as e:
+                    console.print(f"[yellow]Error enhancing section '{section_header.strip()}' (Attempt {attempt+1}): {str(e)}[/]")
+                    if attempt == MAX_RETRIES - 1:
+                        # If all enhancement attempts fail, use the original section
+                        enhanced_sections.append((i, f"{section_header}{section_content}"))
+            
+            progress.update(task, advance=1)
+    
+    # Sort sections by their original order and combine into the enhanced report
+    enhanced_sections.sort(key=lambda x: x[0])
+    enhanced_report = f"# {original_title}\n\n" + "\n\n".join([section for _, section in enhanced_sections])
+    
+    # Update state with the enhanced report
+    state["enhanced_report"] = enhanced_report
+    log_chain_of_thought(state, f"Enhanced report with {len(sections)} sections processed")
     
     if progress_callback:
         await _call_progress_callback(progress_callback, state)
@@ -158,19 +358,143 @@ async def enhance_report_node(llm, progress_callback, state: AgentState) -> Agen
 
 async def expand_key_sections_node(llm, progress_callback, state: AgentState) -> AgentState:
     """
-    Skip expansion step to avoid duplicating content - this function now
-    just passes through the initial report to maintain pipeline compatibility.
+    Expand key sections of the report to provide more comprehensive information.
     """
-
     if is_shutdown_requested():
         state["status"] = "Shutdown requested, skipping section expansion"
         log_chain_of_thought(state, "Shutdown requested, skipping section expansion")
         return state
     
-    # Simply use the enhanced report (which is the initial report) without expansion
-    state["final_report"] = state["enhanced_report"]
-    state["status"] = "Expansion step skipped to preserve report structure"
-    log_chain_of_thought(state, "Expansion step skipped to preserve report structure")
+    state["status"] = "Expanding key report sections"
+    console.print("[bold blue]Expanding key sections with more comprehensive information...[/]")
+    
+    enhanced_report = state.get("enhanced_report", "")
+    if not enhanced_report or len(enhanced_report.strip()) < 500:
+        log_chain_of_thought(state, "Enhanced report too short or missing, using as is")
+        state["final_report"] = enhanced_report
+        return state
+    
+    # Get report title and sections
+    title_match = re.match(r'# ([^\n]+)', enhanced_report)
+    original_title = title_match.group(1) if title_match else state.get("report_title", "Research Report")
+    
+    # Extract sections using regex pattern (only level 2 headings - main content sections)
+    section_pattern = re.compile(r'(##\s+[^\n]+)(\n\n[^#]+?)(?=\n##\s+|\Z)', re.DOTALL)
+    sections = section_pattern.findall(enhanced_report)
+    
+    if not sections:
+        log_chain_of_thought(state, "No expandable sections found, using enhanced report as is")
+        state["final_report"] = enhanced_report
+        return state
+    
+    # Identify important sections to expand (excluding Executive Summary, Introduction, Conclusion, References)
+    important_sections = []
+    for i, (section_header, section_content) in enumerate(sections):
+        title = section_header.replace('#', '').strip().lower()
+        if title not in ["executive summary", "introduction", "conclusion", "references"]:
+            important_sections.append((i, section_header, section_content))
+    
+    # Limit to 3 most important sections
+    important_sections = important_sections[:3]
+    if not important_sections:
+        log_chain_of_thought(state, "No key sections to expand, using enhanced report as is")
+        state["final_report"] = enhanced_report
+        return state
+    
+    # Create a copy of the report that we'll modify
+    expanded_report = enhanced_report
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]Expanding key sections..."),
+        console=console
+    ) as progress:
+        task = progress.add_task("Expanding", total=len(important_sections))
+        
+        # Prepare citation information for expansion
+        citation_registry = state.get("citation_registry")
+        current_date = state.get("current_date", "")
+        
+        # Process each important section
+        for i, section_header, section_content in important_sections:
+            section_title = section_header.replace('#', '').strip()
+            
+            for attempt in range(MAX_RETRIES):
+                try:
+                    # Generate available sources text for this section
+                    available_sources_text = ""
+                    if citation_registry:
+                        available_sources = []
+                        for cid in sorted(citation_registry.citations.keys()):
+                            citation_info = citation_registry.citations[cid]
+                            url = citation_info.get("url", "")
+                            title = citation_info.get("title", "")
+                            available_sources.append(f"[{cid}] - {title} ({url})")
+                        
+                        if available_sources:
+                            available_sources_text = "\n\nAVAILABLE SOURCES FOR CITATION:\n" + "\n".join(available_sources)
+                    
+                    # Configure LLM for this section expansion
+                    expand_llm = llm.with_config({"max_tokens": 6144, "temperature": 0.2})
+                    
+                    # Create section-specific expansion prompt
+                    section_prompt = f"""Expand this section of a research report with much greater depth and detail:
+
+{section_header}{section_content}{available_sources_text}
+
+EXPANSION REQUIREMENTS:
+1. Triple the length and detail of the section while maintaining accuracy
+2. Add specific examples, case studies, or data points to support claims
+3. Include additional context and background information
+4. Add nuance, caveats, and alternative perspectives
+5. Use proper citation format [n] throughout
+6. Maintain the existing section structure but add subsections if appropriate
+7. Ensure all information is accurate as of {current_date}
+
+CITATION REQUIREMENTS:
+- ONLY use the citation IDs provided in the AVAILABLE SOURCES list above
+- Format citations as [n] where n is the exact ID of the source
+- Place citations at the end of the relevant sentences or paragraphs
+- Do not make up your own citation numbers
+- Do not cite sources that aren't in the available sources list
+- Ensure each major claim or statistic has an appropriate citation
+
+IMPORTANT:
+- DO NOT change the section heading
+- DO NOT add information not supported by the research
+- DO NOT use academic-style citations like "Journal of Medicine (2020)"
+- DO NOT include PDF/Text/ImageB/ImageC/ImageI tags or any other markup
+- Return ONLY the expanded section with the original heading
+
+Return the expanded section with the exact same heading but with expanded content.
+"""
+                    # Expand the section
+                    response = await expand_llm.ainvoke(section_prompt)
+                    expanded_content = response.content
+                    
+                    # Clean up any markup errors
+                    expanded_content = re.sub(r'\[\/?(?:PDF|Text|ImageB|ImageC|ImageI)(?:\/?|\])(?:[^\]]*\])?', '', expanded_content)
+                    
+                    # Ensure the section starts with the correct header
+                    if not expanded_content.strip().startswith(section_header.strip()):
+                        expanded_content = f"{section_header}\n\n{expanded_content}"
+                    
+                    # Replace the original section with the expanded one in the report
+                    section_pattern_to_replace = re.escape(section_header) + r'\s*\n\n' + re.escape(section_content.strip())
+                    expanded_report = re.sub(section_pattern_to_replace, expanded_content, expanded_report, flags=re.DOTALL)
+                    
+                    break
+                except Exception as e:
+                    console.print(f"[yellow]Error expanding section '{section_title}' (Attempt {attempt+1}): {str(e)}[/]")
+                    if attempt == MAX_RETRIES - 1:
+                        # If all expansion attempts fail, keep the original section
+                        console.print(f"[yellow]Failed to expand section '{section_title}', keeping original[/]")
+            
+            progress.update(task, advance=1)
+    
+    # Update state with the expanded report
+    state["final_report"] = expanded_report
+    log_chain_of_thought(state, f"Expanded {len(important_sections)} key sections in the report")
     
     if progress_callback:
         await _call_progress_callback(progress_callback, state)
