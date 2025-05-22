@@ -30,7 +30,8 @@ from .nodes import (
     generate_initial_report_node,
     enhance_report_node,
     expand_key_sections_node,
-    report_node
+    report_node,
+    evaluate_quality_node # Import the new node
 )
 from .graph import build_graph, create_node_wrapper
 
@@ -78,6 +79,7 @@ class ResearchGraph:
         enhance = create_node_wrapper(lambda state: enhance_report_node(self.llm, self.progress_callback, state))
         expand_sections = create_node_wrapper(lambda state: expand_key_sections_node(self.llm, self.progress_callback, state))
         final_report = create_node_wrapper(lambda state: report_node(self.llm, self.progress_callback, state))
+        evaluate_quality_node_wrapper = create_node_wrapper(lambda state: evaluate_quality_node(self.llm, self.progress_callback, state)) # Wrap the new node
         
         # Build graph with these node functions
         return build_graph(
@@ -90,7 +92,8 @@ class ResearchGraph:
             initial_report,
             enhance,
             expand_sections,
-            final_report
+            final_report,
+            evaluate_quality_node_wrapper # Pass the new wrapped node
         )
 
     async def research(
@@ -100,12 +103,17 @@ class ResearchGraph:
         breadth: int = 4, 
         progress_callback: Optional[Callable[[AgentState], None]] = None,
         include_objective: bool = False,
-        detail_level: str = "high" 
+        detail_level: str = "standard", 
+        chart_theme: Optional[str] = "default",
+        chart_colors: Optional[str] = None,
+        report_template: str = "standard",
+        use_local_kb: bool = False # New parameter
     ) -> ResearchResult:
         """Execute research process on a query."""
         self.progress_callback = progress_callback
         self.include_objective = include_objective
-        self.detail_level = detail_level
+        self.detail_level = detail_level 
+        # self.use_local_kb = use_local_kb # Not needed at class level if only passed to state
 
         depth = max(1, min(5, depth))  # Ensure depth is between 1 and 5
         breadth = max(1, min(10, breadth))  # Ensure breadth is between 1 and 10
@@ -130,7 +138,11 @@ class ResearchGraph:
             identified_themes="",
             initial_report="",
             enhanced_report="",
-            final_report=""
+            final_report="",
+            chart_theme=chart_theme,
+            chart_colors=chart_colors,
+            report_template=report_template,
+            use_local_kb=use_local_kb # Pass to AgentState
         )
         
         try:
@@ -191,11 +203,15 @@ class ResearchGraph:
         breadth: int = 4, 
         progress_callback: Optional[Callable[[AgentState], None]] = None,
         include_objective: bool = False,
-        detail_level: str = "high"
+        detail_level: str = "standard", 
+        chart_theme: Optional[str] = "default",
+        chart_colors: Optional[str] = None,
+        report_template: str = "standard",
+        use_local_kb: bool = False # New parameter
     ) -> ResearchResult:
         """Synchronous wrapper for research."""
         try:
-            return asyncio.run(self.research(query, depth, breadth, progress_callback, include_objective, detail_level))
+            return asyncio.run(self.research(query, depth, breadth, progress_callback, include_objective, detail_level, chart_theme, chart_colors, report_template, use_local_kb))
         except KeyboardInterrupt:
             console.print("\n[yellow]Research interrupted by user.[/]")
             raise

@@ -6,6 +6,7 @@ import traceback
 from typing import List, Dict, Any, Optional, Tuple
 from rich.console import Console
 from rich.markdown import Markdown
+from ...prompts import STYLE_INSTRUCTIONS, SYSTEM_PROMPTS, safe_format
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel, Field
@@ -145,6 +146,13 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
                 extracted_themes = "## Main Concepts\nCore concepts related to the topic.\n\n## Applications\nPractical applications and implementations.\n\n## Challenges\nChallenges and limitations in the field.\n\n## Future Directions\nEmerging trends and future possibilities."
                 console.print("[yellow]Using fallback themes structure[/]")
 
+    # Update state with extracted themes for progress tracking
+    state["current_extracted_themes"] = extracted_themes
+    state["last_node_activity"] = "Extracted report themes."
+    # Optional: Call progress callback immediately if this step is long or critical for UI update
+    # if progress_callback: 
+    #     await _call_progress_callback(progress_callback, state)
+
     # Step 3: Format citations (with retries)
     formatted_citations = None
     for attempt in range(MAX_RETRIES):
@@ -164,6 +172,9 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
                 console.print("[yellow]Using fallback citation format[/]")
 
     # Step 4: Generate the initial report with progress tracking
+    report_template_name_for_initial = state.get("report_template", "standard")
+    style_instruction_text_for_initial = STYLE_INSTRUCTIONS.get(report_template_name_for_initial, STYLE_INSTRUCTIONS["standard"])
+    
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]Generating report..."),
@@ -183,9 +194,10 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
                     state['selected_sources'],
                     formatted_citations,
                     current_date,
-                    state['detail_level'],
+                    state['detail_level'], # detail_level is passed to the processor
                     include_objective,
-                    citation_registry
+                    citation_registry,
+                    style_instructions=style_instruction_text_for_initial
                 )
                 progress.update(task, completed=1)
                 break
@@ -262,9 +274,29 @@ async def enhance_report_node(llm, progress_callback, state: AgentState) -> Agen
         
         # Prepare citation information for enhancement
         citation_registry = state.get("citation_registry")
-        formatted_citations = state.get("formatted_citations", "")
         current_date = state.get("current_date", "")
         
+        report_template_name_for_enhance = state.get("report_template", "standard")
+        style_instruction_text_for_enhance = STYLE_INSTRUCTIONS.get(report_template_name_for_enhance, STYLE_INSTRUCTIONS["standard"])
+        
+        detail_level_for_enhance = state.get("detail_level", "standard")
+        length_instruction_text_for_enhance = ""
+        if detail_level_for_enhance == "brief":
+            length_instruction_text_for_enhance = "Please be concise and focus on the main points. The section should be summarized briefly."
+        elif detail_level_for_enhance == "standard":
+            length_instruction_text_for_enhance = "Provide a standard level of detail for this section."
+        elif detail_level_for_enhance == "detailed":
+            length_instruction_text_for_enhance = "Expand significantly on this section, providing in-depth analysis, more examples, and comprehensive explanations."
+        elif detail_level_for_enhance.startswith("custom_"):
+            try:
+                words = int(detail_level_for_enhance.split("_")[1])
+                length_instruction_text_for_enhance = f"Aim for the content of this section to be approximately {words} words. Adjust detail and scope accordingly."
+            except (ValueError, IndexError):
+                length_instruction_text_for_enhance = "Provide a standard level of detail for this section (custom detail level parsing failed)."
+        else:
+             length_instruction_text_for_enhance = "Provide a standard level of detail for this section."
+
+
         # Process each section (excluding references)
         for i, (section_header, section_content) in enumerate(sections):
             # Skip enhancing references section
@@ -291,10 +323,16 @@ async def enhance_report_node(llm, progress_callback, state: AgentState) -> Agen
                     # Configure LLM for this section enhancement
                     enhance_llm = llm.with_config({"max_tokens": 4096, "temperature": 0.2})
                     
-                    # Create section-specific enhancement prompt
-                    section_prompt = f"""Enhance this section of a research report with additional depth and detail:
+                    # Create section-specific enhancement prompt, now including style and length instructions
+                    section_prompt_template = f"""{{style_instructions}}
 
-{section_header}{section_content}{available_sources_text}
+Enhance this section of a research report with additional depth and detail, following the length guidance below:
+{{length_instruction}}
+
+Section to enhance:
+{section_header}
+{section_content}
+{available_sources_text}
 
 Your task is to:
 1. Add more detailed explanations to key concepts
@@ -322,7 +360,15 @@ IMPORTANT:
 Return the enhanced section with the exact same heading but with expanded content.
 """
                     # Enhance the section
-                    response = await enhance_llm.ainvoke(section_prompt)
+                    response = await enhance_llm.ainvoke(
+                        safe_format(
+                            section_prompt_template,
+                            style_instructions=style_instruction_text_for_enhance,
+                            length_instruction=length_instruction_text_for_enhance,
+                            current_date=current_date
+                            # section_header, section_content, available_sources_text are already part of the f-string template
+                        )
+                    )
                     section_text = response.content
                     
                     # Clean up any markup errors
@@ -414,7 +460,27 @@ async def expand_key_sections_node(llm, progress_callback, state: AgentState) ->
         # Prepare citation information for expansion
         citation_registry = state.get("citation_registry")
         current_date = state.get("current_date", "")
-        
+
+        report_template_name_for_expand = state.get("report_template", "standard")
+        style_instruction_text_for_expand = STYLE_INSTRUCTIONS.get(report_template_name_for_expand, STYLE_INSTRUCTIONS["standard"])
+
+        detail_level_for_expand = state.get("detail_level", "standard")
+        length_instruction_text_for_expand = ""
+        if detail_level_for_expand == "brief":
+            length_instruction_text_for_expand = "Please be concise and focus on the main points. The section should be summarized briefly, likely shorter than its current state if it's already detailed."
+        elif detail_level_for_expand == "standard":
+            length_instruction_text_for_expand = "Provide a standard level of detail and length for this section, similar to what a comprehensive encyclopedia article might offer for a subsection."
+        elif detail_level_for_expand == "detailed":
+            length_instruction_text_for_expand = "Expand significantly on this section. Aim to substantially increase its length by providing in-depth analysis, multiple examples, historical context if relevant, and comprehensive explanations of all facets."
+        elif detail_level_for_expand.startswith("custom_"):
+            try:
+                words = int(detail_level_for_expand.split("_")[1])
+                length_instruction_text_for_expand = f"Aim for the content of this section to be approximately {words} words. Adjust detail, scope, and length accordingly to meet this target."
+            except (ValueError, IndexError):
+                length_instruction_text_for_expand = "Provide a standard level of detail for this section (custom detail level parsing failed)."
+        else: 
+            length_instruction_text_for_expand = "Provide a standard level of detail for this section."
+
         # Process each important section
         for i, section_header, section_content in important_sections:
             section_title = section_header.replace('#', '').strip()
@@ -437,13 +503,19 @@ async def expand_key_sections_node(llm, progress_callback, state: AgentState) ->
                     # Configure LLM for this section expansion
                     expand_llm = llm.with_config({"max_tokens": 6144, "temperature": 0.2})
                     
-                    # Create section-specific expansion prompt
-                    section_prompt = f"""Expand this section of a research report with much greater depth and detail:
+                    # Create section-specific expansion prompt, now including style and length instructions
+                    section_prompt_template = f"""{{style_instructions}}
 
-{section_header}{section_content}{available_sources_text}
+Expand this section of a research report with much greater depth and detail, following the length guidance below:
+{{length_instruction}}
+
+Section to expand:
+{section_header}
+{section_content}
+{available_sources_text}
 
 EXPANSION REQUIREMENTS:
-1. Triple the length and detail of the section while maintaining accuracy
+1. Triple the length and detail of the section while maintaining accuracy (Note: this is a general guideline, prioritize the {{length_instruction}} if it specifies a different scope).
 2. Add specific examples, case studies, or data points to support claims
 3. Include additional context and background information
 4. Add nuance, caveats, and alternative perspectives
@@ -469,7 +541,15 @@ IMPORTANT:
 Return the expanded section with the exact same heading but with expanded content.
 """
                     # Expand the section
-                    response = await expand_llm.ainvoke(section_prompt)
+                    response = await expand_llm.ainvoke(
+                        safe_format(
+                            section_prompt_template,
+                            style_instructions=style_instruction_text_for_expand,
+                            length_instruction=length_instruction_text_for_expand,
+                            current_date=current_date
+                            # section_header, section_content, available_sources_text are already part of the f-string template
+                        )
+                    )
                     expanded_content = response.content
                     
                     # Clean up any markup errors
@@ -702,10 +782,22 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
 
                     processed_text, bibliography_entries = citation_manager.get_citations_for_report(final_report)
                     
-                    # Use the citation manager's bibliography formatter with APA style
+                    # Use the citation manager's bibliography formatter with the determined style
                     if bibliography_entries:
-                        formatted_citations = citation_manager.format_bibliography(bibliography_entries, "apa")
-                        console.print(f"[bold green]Generated enhanced bibliography with {len(bibliography_entries)} entries[/]")
+                        report_template_name_for_bib = state.get("report_template", "standard")
+                        citation_style_map = {
+                            "academic": "apa",
+                            "literature_review": "mla", 
+                            "business": "apa",     
+                            "standard": "apa"       
+                        }
+                        citation_style_to_use = citation_style_map.get(report_template_name_for_bib, "apa")
+                        
+                        formatted_citations = citation_manager.format_bibliography(
+                            bibliography_entries, 
+                            style=citation_style_to_use
+                        )
+                        console.print(f"[bold green]Generated bibliography with '{citation_style_to_use.upper()}' style for '{report_template_name_for_bib}' report, containing {len(bibliography_entries)} entries[/]")
                 # Fall back to regular citation formatting
                 elif used_citations:
 

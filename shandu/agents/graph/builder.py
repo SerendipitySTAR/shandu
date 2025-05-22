@@ -15,7 +15,8 @@ def build_graph(
     generate_initial_report_node,
     enhance_report_node,
     expand_key_sections_node,
-    report_node
+    report_node,
+    evaluate_quality_node # New parameter for the quality evaluation node
 ) -> Graph:
     """
     Build the research workflow graph with all nodes.
@@ -38,6 +39,7 @@ def build_graph(
     workflow.add_node("enhance_report", enhance_report_node)
     workflow.add_node("expand_key_sections", expand_key_sections_node)
     workflow.add_node("report", report_node)
+    workflow.add_node("evaluate_quality", evaluate_quality_node) # Add the new node
 
     workflow.add_edge("initialize", "generate_queries")
     workflow.add_edge("reflect", "generate_queries")
@@ -52,8 +54,9 @@ def build_graph(
     workflow.add_edge("generate_initial_report", "enhance_report")
     workflow.add_edge("enhance_report", "expand_key_sections")
     workflow.add_edge("expand_key_sections", "report")
+    workflow.add_edge("report", "evaluate_quality") # New edge from report to evaluate_quality
     
     workflow.set_entry_point("initialize")
-    workflow.set_finish_point("report")
+    workflow.set_finish_point("evaluate_quality") # New finish point
     
     return workflow.compile()

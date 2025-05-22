@@ -32,6 +32,11 @@ from .search.ai_search import AISearcher
 from .scraper import WebScraper
 from .research.researcher import DeepResearcher
 from .agents.utils.agent_utils import is_shutdown_requested, get_shutdown_level
+from .agents.utils.citation_manager import SourceInfo # For Local KB
+from .document_parser import parse_document # For Local KB
+from .utils.kb_utils import load_local_kb, save_local_kb, generate_kb_id, _ensure_kb_dir_exists as ensure_kb_dir_for_cli # Renamed to avoid conflict
+import dataclasses # For Local KB (asdict)
+# hashlib is now used within kb_utils.py
 
 console = Console()
 
@@ -118,17 +123,19 @@ def create_research_dashboard(state: AgentState) -> Layout:
         Layout(name="right", ratio=1)
     )
     layout["left"].split(
-        Layout(name="status", size=3),
+        Layout(name="status", size=5), # Increased size for Last Activity
         Layout(name="progress", size=3),
-        Layout(name="findings")
+        Layout(name="themes_panel", ratio=1, minimum_size=3, visible=False), 
+        Layout(name="findings", ratio=2)
     )
     layout["right"].split(
-        Layout(name="queries"),
-        Layout(name="sources"),
-        Layout(name="chain_of_thought")
+        Layout(name="queries", ratio=1),
+        Layout(name="sources", ratio=1),
+        Layout(name="selected_titles_panel", ratio=1, minimum_size=3, visible=False),
+        Layout(name="chain_of_thought", ratio=1)
     )
     
-    elapsed_time = time.time() - state["start_time"]
+    elapsed_time = time.time() - state.get("start_time", time.time()) # Use .get for safety
     minutes, seconds = divmod(int(elapsed_time), 60)
     header_content = f"[bold blue]Research Query:[/] {state['query']}\n"
     header_content += f"[bold blue]Status:[/] {state['status']} | "
@@ -139,12 +146,22 @@ def create_research_dashboard(state: AgentState) -> Layout:
     status_table = Table(show_header=False, box=None)
     status_table.add_column("Metric", style="blue")
     status_table.add_column("Value")
-    status_table.add_row("Current Depth", f"{state['current_depth']}/{state['depth']}")
-    status_table.add_row("Sources Found", str(len(state['sources'])))
-    status_table.add_row("Subqueries Explored", str(len(state['subqueries'])))
+    status_table.add_row("Current Depth", f"{state.get('current_depth', 0)}/{state.get('depth', 0)}")
+    status_table.add_row("Sources Found", str(len(state.get('sources', []))))
+    status_table.add_row("Subqueries Explored", str(len(state.get('subqueries', []))))
+    last_activity_text = state.get("last_node_activity", "N/A")
+    status_table.add_row("Last Activity", sanitize_markup(last_activity_text))
     layout["status"].update(Panel(status_table, title="Research Progress"))
-    
-    progress_percent = min(100, int((state['current_depth'] / max(1, state['depth'])) * 100))
+
+    # Themes Panel
+    current_themes_text = state.get("current_extracted_themes")
+    if current_themes_text:
+        layout["themes_panel"].visible = True
+        layout["themes_panel"].update(Panel(Markdown(sanitize_markup(current_themes_text)), title="Extracted Themes"))
+    else:
+        layout["themes_panel"].visible = False # Or update with "No themes yet."
+
+    progress_percent = min(100, int((state.get('current_depth', 0) / max(1, state.get('depth', 1))) * 100)) # Avoid division by zero
     progress_bar = f"[{'#' * (progress_percent // 5)}{' ' * (20 - progress_percent // 5)}] {progress_percent}%"
     layout["progress"].update(Panel(progress_bar, title="Completion"))
     
@@ -166,10 +183,19 @@ def create_research_dashboard(state: AgentState) -> Layout:
         source_counts[source_type] = source_counts.get(source_type, 0) + 1
     for source_type, count in source_counts.items():
         sources_table.add_row(source_type, str(count))
-    layout["sources"].update(Panel(sources_table, title="Sources"))
+    layout["sources"].update(Panel(sources_table, title="Sources Overview"))
+
+    # Selected Source Titles Panel
+    current_selected_titles = state.get("current_selected_source_titles")
+    if current_selected_titles and isinstance(current_selected_titles, list) and len(current_selected_titles) > 0:
+        titles_display_text = "\n".join([f"{i+1}. {sanitize_markup(title)}" for i, title in enumerate(current_selected_titles)])
+        layout["selected_titles_panel"].visible = True
+        layout["selected_titles_panel"].update(Panel(titles_display_text, title=f"Selected Source Titles ({len(current_selected_titles)})"))
+    else:
+        layout["selected_titles_panel"].visible = False # Or update with "No titles yet."
     
-    cot_text = "\n".join(state["chain_of_thought"][-5:]) if state["chain_of_thought"] else "No thoughts recorded yet..."
-    layout["chain_of_thought"].update(Panel(cot_text, title="Chain of Thought"))
+    cot_text = "\n".join(state.get("chain_of_thought", [])[-5:]) if state.get("chain_of_thought") else "No thoughts recorded yet..."
+    layout["chain_of_thought"].update(Panel(cot_text, title="Chain of Thought (Last 5)"))
     
     footer_text = "Press Ctrl+C to stop research"
     if is_shutdown_requested():
@@ -306,6 +332,12 @@ def clean(force: bool, cache_only: bool):
               help="Research strategy to use")
 @click.option("--include-chain-of-thought", "-c", is_flag=True, help="Include chain of thought in report")
 @click.option("--include-objective", "-i", is_flag=True, help="Include objective section in report")
+@click.option(
+    "--use-local-kb",
+    is_flag=True,
+    default=False,
+    help="Enable searching within the local knowledge base."
+)
 def research(
     query: str, 
     depth: Optional[int], 
@@ -314,7 +346,8 @@ def research(
     verbose: bool,
     strategy: str,
     include_chain_of_thought: bool,
-    include_objective: bool
+    include_objective: bool,
+    use_local_kb: bool # New parameter
 ):
     """Perform deep research on a topic."""
     if depth is None:
@@ -349,6 +382,7 @@ def research(
         f"[bold blue]Depth:[/] {depth}\n"
         f"[bold blue]Breadth:[/] {breadth}\n"
         f"[bold blue]Strategy:[/] {strategy}\n"
+        f"[bold blue]Local KB Search:[/] {'Enabled' if use_local_kb else 'Disabled'}\n"
         f"[bold blue]Model:[/] {model}",
         title="Research Parameters",
         border_style="blue"
@@ -400,7 +434,8 @@ def research(
                     depth=depth,
                     breadth=breadth,
                     progress_callback=debounced_update_display,
-                    include_objective=include_objective
+                    include_objective=include_objective,
+                    use_local_kb=use_local_kb # Pass new flag
                 )
             except KeyboardInterrupt:
                 console.print("\n[yellow]Research interrupted by user.[/]")
@@ -624,3 +659,139 @@ def scrape(url: str, dynamic: bool):
 
 if __name__ == "__main__":
     cli()
+
+# --- Local Knowledge Base CLI Commands ---
+@cli.group()
+def local():
+    """Manage the local knowledge base."""
+    _ensure_kb_dir_exists() # Ensure directory exists when group is invoked
+    pass
+
+@local.command("add")
+@click.argument("file_path", type=click.Path(exists=True, dir_okay=False, resolve_path=True))
+def add(file_path: str):
+    """Add a document to the local knowledge base."""
+    console.print(f"Attempting to add document: {file_path}")
+
+    parsed_info = parse_document(file_path)
+
+    if parsed_info is None or parsed_info.get("metadata", {}).get("error"):
+        error_message = parsed_info.get("metadata", {}).get("error", "Failed to parse document.") if parsed_info else "Failed to parse document."
+        console.print(f"[red]Error parsing document: {sanitize_error(error_message)}[/red]")
+        return
+
+    kb_id = generate_kb_id(file_path)
+    kb_data = load_local_kb()
+
+    if any(item.get("metadata", {}).get("kb_id") == kb_id for item in kb_data):
+        console.print(f"[red]Error: Document with ID {kb_id} (from path {file_path}) already exists in the knowledge base.[/red]")
+        return
+
+    try:
+        stat_info = os.stat(file_path)
+        creation_date = stat_info.st_ctime
+        last_modified_date = stat_info.st_mtime
+    except Exception as e:
+        console.print(f"[yellow]Warning: Could not retrieve file dates for {file_path}: {sanitize_error(e)}[/yellow]")
+        creation_date = time.time() # Fallback to current time
+        last_modified_date = time.time() # Fallback to current time
+
+    file_extension = os.path.splitext(file_path)[1].lower()
+    content_type_map = {
+        ".txt": "text/plain",
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+    
+    source_info_metadata = parsed_info.get("metadata", {})
+    source_info_metadata["kb_id"] = kb_id # Add kb_id to the document's own metadata
+
+    source_info_obj = SourceInfo(
+        url="localfile:" + kb_id,
+        title=parsed_info.get("title") or os.path.basename(file_path),
+        source_type=f"local_{file_extension.strip('.')}",
+        content_type=content_type_map.get(file_extension, "application/octet-stream"),
+        file_path=file_path,
+        original_filename=os.path.basename(file_path),
+        creation_date=creation_date,
+        last_modified_date=last_modified_date,
+        extracted_content=parsed_info.get("text_content", ""),
+        metadata=source_info_metadata,
+        # Initialize other SourceInfo fields not directly from parser if needed
+        snippet="", 
+        access_time=time.time(), 
+        domain="local", # Or consider leaving blank for local files
+        reliability_score=0.0, # Default for local files, can be adjusted
+        visualizable_data=[] 
+    )
+
+    # Convert SourceInfo dataclass instance to dictionary
+    source_info_dict = dataclasses.asdict(source_info_obj)
+    
+    kb_data.append(source_info_dict)
+    save_local_kb(kb_data)
+    console.print(f"[green]Successfully added '{source_info_obj.title}' to local knowledge base with ID: {kb_id}[/green]")
+
+@local.command("list")
+def list_command():
+    """List documents in the local knowledge base."""
+    kb_data = load_local_kb()
+
+    if not kb_data:
+        console.print("[yellow]Local knowledge base is empty.[/yellow]")
+        return
+
+    table = Table(title="Local Knowledge Base Documents")
+    table.add_column("KB ID", style="cyan", no_wrap=True)
+    table.add_column("Title", style="magenta")
+    table.add_column("Source Type", style="green")
+    table.add_column("Original Filename", style="blue")
+    table.add_column("File Path", style="dim")
+
+
+    for item in kb_data:
+        # metadata.get('kb_id') is safer as 'metadata' itself might be missing if data is malformed
+        metadata = item.get("metadata", {})
+        kb_id = metadata.get("kb_id", "N/A") 
+        
+        table.add_row(
+            kb_id,
+            item.get("title", "N/A"),
+            item.get("source_type", "N/A"),
+            item.get("original_filename", "N/A"),
+            item.get("file_path", "N/A")
+        )
+    
+    console.print(table)
+
+@local.command("remove")
+@click.argument("kb_identifier", type=str)
+def remove(kb_identifier: str):
+    """Remove a document from the local knowledge base by its KB_ID."""
+    kb_data = load_local_kb()
+    
+    item_to_remove = None
+    item_index = -1
+
+    for i, item in enumerate(kb_data):
+        metadata = item.get("metadata", {})
+        if metadata.get("kb_id") == kb_identifier:
+            item_to_remove = item
+            item_index = i
+            break
+            
+    if item_to_remove is None:
+        console.print(f"[red]Error: No document found with KB_ID '{kb_identifier}'.[/red]")
+        return
+        
+    # Confirm removal
+    title_to_remove = item_to_remove.get('title', kb_identifier)
+    if not click.confirm(f"Are you sure you want to remove '{title_to_remove}' (ID: {kb_identifier}) from the local knowledge base?"):
+        console.print("[yellow]Operation cancelled.[/yellow]")
+        return
+
+    kb_data.pop(item_index)
+    save_local_kb(kb_data)
+    console.print(f"[green]Successfully removed '{title_to_remove}' (ID: {kb_identifier}) from the local knowledge base.[/green]")
+
+# --- End Local Knowledge Base CLI Commands ---

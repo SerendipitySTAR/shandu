@@ -15,6 +15,14 @@ def safe_format(template: str, **kwargs: Any) -> str:
                   for k, v in kwargs.items()}
     return template.format(**safe_kwargs)
 
+# Style-specific instructions for report generation
+STYLE_INSTRUCTIONS: Dict[str, str] = {
+    "standard": "Generate a comprehensive and well-structured report. Ensure clarity, logical flow, and detailed explanations for each section. Use standard professional language.",
+    "academic": "Generate a formal academic report with a rigorous argumentation structure, precise language, and professional terminology. Ensure a logical flow with clear sections like Introduction, Literature Review (if applicable), Methodology, Findings, Discussion, and Conclusion. Emphasize critical analysis and evidence-based claims. All assertions must be backed by credible sources.",
+    "business": "Generate a business report focused on practicality, clarity, and decision support. Prioritize key findings and actionable insights. Use clear, concise language and professional formatting (e.g., bullet points for recommendations, concise summaries). Structure the report logically, possibly including an Executive Summary, Key Findings, Analysis, Recommendations, and Conclusion. Visual aids like tables should be used where appropriate.",
+    "literature_review": "Generate a comprehensive literature review that surveys scholarly articles, books, and other sources relevant to a particular issue, area of research, or theory. Provide a description, summary, and critical evaluation of each work, and identify patterns, gaps, and relationships among them. Organize the review thematically or chronologically, leading to a clear understanding of the current state of knowledge on the topic."
+}
+
 # System prompts
 SYSTEM_PROMPTS: Dict[str, str] = {
     "research_agent": """You are an expert research agent with a strict mandate to investigate topics in exhaustive detail. Adhere to the following instructions without deviation:
@@ -105,6 +113,8 @@ MANDATORY REQUIREMENTS:
 3. Substantiate factual statements with appropriate references.
 4. Provide detailed paragraphs for every major topic or section.
 
+{{style_instructions}}
+
 MARKDOWN ENFORCEMENT:
 - Use headings (#, ##, ###) carefully to maintain a hierarchical structure.
 - Incorporate tables, bolding, italics, code blocks, blockquotes, and horizontal rules as appropriate.
@@ -141,7 +151,9 @@ REQUIREMENTS:
 - Preserve all critical details mentioned by the user.
 - The format must be simple plain text with no extraneous headings or bullet points.""",
 
-    "report_enhancement": """You must enhance an existing research report for greater depth and clarity. Today's date: {{current_date}}.
+    "report_enhancement": """You must enhance an existing research report for greater depth and clarity, adhering to the specified style. Today's date: {{current_date}}.
+
+{{style_instructions}}
 
 MANDATORY ENHANCEMENT DIRECTIVES:
 1. Eliminate any mention of "Research Framework," "Objective," or similar sections.
@@ -152,20 +164,22 @@ MANDATORY ENHANCEMENT DIRECTIVES:
 6. Omit any mention of time spent or processes used to generate the report.
 
 CONTENT ENHANCEMENT:
-- Improve depth and clarity throughout.
-- Provide more examples, historical backgrounds, theoretical frameworks, and future directions.
-- Compare multiple viewpoints and delve into technical complexities.
+- Improve depth and clarity throughout, consistent with the specified style.
+- Provide more examples, historical backgrounds, theoretical frameworks, and future directions relevant to the style.
+- Compare multiple viewpoints and delve into technical complexities as appropriate for the style.
 - Maintain cohesive narrative flow and do not introduce contradictory information.
 
-Your final product must be an authoritative work that exhibits academic-level depth, thoroughness, and clarity.""",
+Your final product must be an authoritative work that exhibits the depth, thoroughness, and clarity demanded by the specified report style.""",
 
-    "section_expansion": """You must significantly expand the specified section of the research report. Strictly adhere to the following:
+    "section_expansion": """You must significantly expand the specified section of the research report, adhering to the specified style. Strictly adhere to the following:
 
-- Add newly written paragraphs of in-depth analysis and context.
-- Employ extensive markdown for headings, tables, bold highlights, italics, code blocks, blockquotes, and lists.
-- Include comprehensive examples, case studies, historical trajectories, theoretical frameworks, and nuanced viewpoints.
+{{style_instructions}}
 
-Transform this section into an authoritative, stand-alone piece that could be published independently, demonstrating meticulous scholarship and thorough reasoning.
+- Add newly written paragraphs of in-depth analysis and context consistent with the report's style.
+- Employ extensive markdown for headings, tables, bold highlights, italics, code blocks, blockquotes, and lists, as appropriate for the style.
+- Include comprehensive examples, case studies, historical trajectories, theoretical frameworks, and nuanced viewpoints relevant to the style.
+
+Transform this section into an authoritative, stand-alone piece that could be published independently, demonstrating meticulous scholarship and thorough reasoning in line with the report's overall style.
 
 Section to expand: {{section}}""",
 
@@ -224,9 +238,10 @@ Informed by the current findings and reflection: {{findings}}
 INSTRUCTIONS FOR YOUR QUERIES:
 1. Each query must be phrased in natural, conversational language.
 2. Keep them concise, typically under 10 words.
-3. Address explicit knowledge gaps identified in the reflection.
-4. Do not number or list them. Place each query on its own line.
-5. Avoid academic or formal language.
+3. Prioritize addressing content under '## Knowledge Gaps' and '## Next Steps' sections found in the reflection (within the 'current findings' text). These sections outline areas needing further investigation.
+4. If these specific sections are not present or don't provide enough direction, then generate queries based on overall knowledge gaps in the findings.
+5. Do not number or list them. Place each query on its own line.
+6. Avoid academic or formal language.
 
 Provide only the queries, nothing else.""",
 

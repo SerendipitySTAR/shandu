@@ -98,10 +98,11 @@ SOURCES TO EVALUATE:
 {sources_text[:15000]}  # Limit text length to avoid token issues
 
 INSTRUCTIONS:
-- Select 15-20 of the most valuable sources from the list
-- Return ONLY the exact URLs of your selected sources
-- List the URLs in order of importance, one URL per line
-- Do not include any explanations, just the URLs
+- The source list may contain 'Web Page' and 'Local Document' types. Evaluate both based on their provided information (title, summary/snippet).
+- Select 15-20 of the most valuable sources from the list.
+- Return ONLY the exact URLs of your selected sources (e.g., http://... or localfile:...).
+- List the URLs in order of importance, one URL per line.
+- Do not include any explanations, just the URLs.
 """
                 # Try with a smaller timeout and token limit
                 retry_llm = llm.with_config({"timeout": 30, "max_tokens": 1024})
@@ -135,30 +136,48 @@ async def smart_source_selection(llm, progress_callback, state: AgentState) -> A
     state["status"] = "Selecting most valuable sources"
     console.print("[bold blue]Selecting most relevant and high-quality sources...[/]")
 
-    # Collect all unique source URLs
-    all_source_urls = []
-    for analysis in state["content_analysis"]:
-        if "sources" in analysis and isinstance(analysis["sources"], list):
-            for url in analysis["sources"]:
-                if url not in all_source_urls:
-                    all_source_urls.append(url)
+    # Collect all unique source URLs directly from state["sources"]
+    all_sources_in_state = state.get("sources", [])
+    # Create a dictionary to easily get full source_meta by URL, avoiding duplicates
+    url_to_source_meta_map = {s.get("url"): s for s in all_sources_in_state if s.get("url")}
+    all_source_urls = list(url_to_source_meta_map.keys())
     
-    console.print(f"[green]Found {len(all_source_urls)} total sources to evaluate[/]")
+    console.print(f"[green]Found {len(all_source_urls)} total unique sources to evaluate[/]")
     
     # If we have too many sources, use smart selection to filter them
-    if len(all_source_urls) > 25:
+    # Or if we have sources but not too many, we might still want to run selection if it's a core part of the process
+    # For now, keeping the threshold logic:
+    if len(all_source_urls) > 25: # This threshold might need adjustment
         # Prepare formatted source text
         sources_text = ""
         for i, url in enumerate(all_source_urls, 1):
-            source_meta = next((s for s in state["sources"] if s.get("url") == url), {})
+            source_meta = url_to_source_meta_map.get(url, {}) # Get the full dict from our map
             
             sources_text += f"Source {i}:\nURL: {url}\n"
-            if source_meta.get("title"):
-                sources_text += f"Title: {source_meta.get('title')}\n"
-            if source_meta.get("snippet"):
-                sources_text += f"Summary: {source_meta.get('snippet')}\n"
-            if source_meta.get("date"):
-                sources_text += f"Date: {source_meta.get('date')}\n"
+            source_type = source_meta.get("source", "web").lower() # Default to web if not specified
+            
+            if source_type == "localkb": # Check if it's a local KB item
+                sources_text += f"Type: Local Document\n"
+                title = source_meta.get("title", source_meta.get("original_filename", "Untitled Local Document"))
+                sources_text += f"Title: {title}\n"
+                content = source_meta.get("extracted_content", "")
+                snippet = (content[:250] + "...") if content else "No content preview available."
+                sources_text += f"Summary: {snippet}\n"
+                if source_meta.get("kb_id"):
+                    sources_text += f"KB_ID: {source_meta.get('kb_id')}\n"
+                if source_meta.get("last_modified_date"):
+                    try:
+                        # Format timestamp if it's a float/int
+                        mod_time = float(source_meta["last_modified_date"])
+                        sources_text += f"Last Modified: {time.strftime('%Y-%m-%d', time.localtime(mod_time))}\n"
+                    except (ValueError, TypeError):
+                        sources_text += f"Last Modified: {source_meta.get('last_modified_date')}\n" # Keep as string if not timestamp
+            else: # Web source
+                sources_text += f"Type: Web Page\n"
+                sources_text += f"Title: {source_meta.get('title', 'Untitled Web Page')}\n"
+                sources_text += f"Snippet: {source_meta.get('snippet', 'No snippet available.')}\n"
+                if source_meta.get("date"): # Web sources might have a 'date' field from search result
+                    sources_text += f"Date: {source_meta.get('date')}\n"
             sources_text += "\n"
         
         # Try LLM-based selection with retry logic
@@ -211,6 +230,32 @@ async def smart_source_selection(llm, progress_callback, state: AgentState) -> A
         # If we don't have too many sources, use all of them
         state["selected_sources"] = all_source_urls
         log_chain_of_thought(state, f"Using all {len(all_source_urls)} sources for final report")
+    
+    # Populate current_selected_source_titles and last_node_activity
+    selected_source_urls = state.get("selected_sources", [])
+    all_sources_info = state.get("sources", []) # These are the initial search results, List[Dict[str, Any]]
+    
+    source_url_to_title_map = {
+        s_info.get('url'): s_info.get('title', 'Untitled') 
+        for s_info in all_sources_info 
+        if s_info.get('url') # Ensure URL exists
+    }
+    
+    list_of_titles = [
+        source_url_to_title_map.get(url, 'Untitled Source') 
+        for url in selected_source_urls 
+        if url in source_url_to_title_map
+    ]
+    # If a selected URL was not in the original 'sources' list (e.g. added manually or from a different step), 
+    # it might not have a title in the map. Add a placeholder.
+    for url in selected_source_urls:
+        if url not in source_url_to_title_map:
+            list_of_titles.append(f"Source (URL: {url[:50]}...)")
+
+
+    state["current_selected_source_titles"] = list_of_titles
+    state["last_node_activity"] = f"Selected {len(selected_source_urls)} relevant sources. Titles processed: {len(list_of_titles)}."
+
 
     if progress_callback:
         await _call_progress_callback(progress_callback, state)

@@ -7,6 +7,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from ..utils.citation_registry import CitationRegistry
+from ...prompts import SYSTEM_PROMPTS, safe_format # Ensure safe_format and SYSTEM_PROMPTS are imported
 
 # Structured output models
 class ReportTitle(BaseModel):
@@ -308,15 +309,22 @@ async def generate_initial_report(
     current_date: str,
     detail_level: str,
     include_objective: bool,
-    citation_registry: Optional[CitationRegistry] = None
+    citation_registry: Optional[CitationRegistry] = None,
+    style_instructions: str = "" # Add new parameter
 ) -> str:
     """Generate the initial report draft using structured output."""
     # Use structured output for initial report generation
-    structured_llm = llm.with_structured_output(InitialReport, method="function_calling")
+    # structured_llm = llm.with_structured_output(InitialReport, method="function_calling") # Keep for now, but direct prompt is primary
 
     objective_instruction = ""
     if not include_objective:
         objective_instruction = "\n\nIMPORTANT: DO NOT include an \"Objective\" section at the beginning of the report. Let your content and analysis naturally determine the structure."
+    
+    # Ensure style_instructions has a fallback if empty, though default is provided in signature
+    if not style_instructions:
+        from ...prompts import STYLE_INSTRUCTIONS # Import here if not top-level due to potential circular deps or for clarity
+        style_instructions = STYLE_INSTRUCTIONS.get("standard", "Generate a standard report.")
+
 
     available_sources_text = ""
     if citation_registry:
@@ -331,6 +339,7 @@ async def generate_initial_report(
             available_sources_text = "\n\nAVAILABLE SOURCES FOR CITATION:\n" + "\n".join(available_sources)
     
     # Use a direct system prompt without template variables
+    # Incorporate style_instructions into the system prompt
     system_prompt = f"""You are generating a comprehensive research report based on extensive research.
     
     REPORT REQUIREMENTS:
@@ -340,6 +349,9 @@ async def generate_initial_report(
     - Base the report ENTIRELY on the provided research findings.
     - As of {current_date}, incorporate the most up-to-date information available.
     - Create a dynamic structure based on the content themes rather than a rigid template.{objective_instruction}
+
+    STYLE GUIDELINES:
+    {style_instructions}
     
     CITATION REQUIREMENTS:
     - ONLY use the citation IDs provided in the AVAILABLE SOURCES list
@@ -384,7 +396,7 @@ IMPORTANT: Begin your report with the exact title provided: "{report_title}" - d
 
     try:
         # Direct non-structured approach to avoid errors
-        # Direct non-structured approach to avoid errors
+        # Incorporate style_instructions into the direct_prompt
         direct_prompt = f"""Create an extremely comprehensive, detailed research report that is AT LEAST 5,000 words long.
 
 Title: {report_title}
@@ -399,8 +411,11 @@ REPORT REQUIREMENTS:
 - The level of detail should be {detail_level.upper()}.
 - Base the report ENTIRELY on the provided research findings.
 - As of {current_date}, incorporate the most up-to-date information available.
-- Create a dynamic structure based on the content themes rather than a rigid template.
+- Create a dynamic structure based on the content themes rather than a rigid template.{objective_instruction}
 - CRITICALLY IMPORTANT: DO NOT include the original query text at the beginning of the report. Start directly with the title.
+
+STYLE GUIDELINES TO FOLLOW:
+{style_instructions}
 
 CITATION REQUIREMENTS:
 - ONLY use the citation IDs provided in the AVAILABLE SOURCES list

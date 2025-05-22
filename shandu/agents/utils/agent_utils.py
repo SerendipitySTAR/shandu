@@ -150,63 +150,83 @@ def display_research_progress(state: AgentState) -> Tree:
     status = re.sub(r'\[[^\]]*\]', '', status_raw)  # Remove any potential markup
     status = escape(status)  # Escape any remaining characters
     
+    last_node_activity_raw = state.get("last_node_activity", "")
+    last_node_activity = escape(re.sub(r'\[[^\]]*\]', '', last_node_activity_raw))
+
     phase = "Research" if "depth" in status.lower() or any(word in status.lower() for word in ["searching", "querying", "reflecting", "analyzing"]) else "Report Generation"
     
-    tree = Tree(f"[bold blue]{phase} Progress: {status}")
+    main_label = f"[bold blue]{phase} Progress: {status}"
+    if last_node_activity:
+        main_label += f" | Last: {last_node_activity}"
+    tree = Tree(main_label)
 
     stats_node = tree.add(f"[cyan]Stats")
     stats_node.add(f"[blue]Time Elapsed:[/] {minutes}m {seconds}s")
     
     if phase == "Research":
         # Display research-specific stats
-        stats_node.add(f"[blue]Current Depth:[/] {state['current_depth']}/{state['depth']}")
-        stats_node.add(f"[blue]Sources Found:[/] {len(state['sources'])}")
-        stats_node.add(f"[blue]Subqueries Explored:[/] {len(state['subqueries'])}")
+        stats_node.add(f"[blue]Current Depth:[/] {state.get('current_depth',0)}/{state.get('depth',0)}")
+        stats_node.add(f"[blue]Sources Found:[/] {len(state.get('sources',[]))}")
+        stats_node.add(f"[blue]Subqueries Explored:[/] {len(state.get('subqueries',[]))}")
         
         # Show current research paths - with safety checks
-        if state["subqueries"]:
+        subqueries = state.get("subqueries", [])
+        if subqueries:
             queries_node = tree.add("[green]Current Research Paths")
-            # Safely get the last N queries based on breadth
-            breadth = max(1, state.get("breadth", 1))  # Ensure breadth is at least 1
-            
-            # Limit to actual number of queries available
-            display_count = min(breadth, len(state["subqueries"]))
+            breadth = max(1, state.get("breadth", 1))
+            display_count = min(breadth, len(subqueries))
             
             if display_count > 0:
-                for i in range(-display_count, 0):  # Get the last 'display_count' elements
-                    if i + len(state["subqueries"]) >= 0:  # Safety check
-                        query_text = state["subqueries"][i]
-                        # Sanitize the query text
-                        query_text = re.sub(r'\[[^\]]*\]', '', query_text)
-                        query_text = escape(query_text)
+                for i in range(-display_count, 0): 
+                    if i + len(subqueries) >= 0: 
+                        query_text = subqueries[i]
+                        query_text = escape(re.sub(r'\[[^\]]*\]', '', query_text))
                         queries_node.add(query_text)
-    else:
-        # Display report generation specific stats
+    else: # Report Generation Phase
         stats_node.add(f"[blue]Sources Selected:[/] {len(state.get('selected_sources', []))}")
         
-        # Show report generation progress
         report_progress = tree.add("[green]Report Generation Progress")
-        if state.get("selected_sources"):
-            report_progress.add("[green]✓[/green] Sources selected")
+        if state.get("selected_sources"): # Check if 'selected_sources' key exists and has content
+            report_progress.add(f"[green]✓[/green] Sources selected ({len(state.get('selected_sources',[]))} items)")
         if state.get("formatted_citations"):
             report_progress.add("[green]✓[/green] Citations formatted")
         if state.get("initial_report"):
             report_progress.add("[green]✓[/green] Initial report generated")
         if state.get("enhanced_report"):
-            report_progress.add("[green]✓[/green] Report enhanced with details")
+            report_progress.add("[green]✓[/green] Report enhanced")
         if state.get("final_report"):
             report_progress.add("[green]✓[/green] Key sections expanded")
-    
+
+    # Display current extracted themes if available
+    current_extracted_themes = state.get("current_extracted_themes")
+    if current_extracted_themes:
+        themes_branch = tree.add("[bold cyan]Current Extracted Themes:[/bold cyan]")
+        # Display themes as a single block of text, escaped.
+        # If themes are very long, consider showing a summary or first few lines.
+        themes_text_to_display = escape(current_extracted_themes[:500] + "..." if len(current_extracted_themes) > 500 else current_extracted_themes)
+        themes_branch.add(themes_text_to_display)
+
+    # Display current selected source titles if available
+    current_selected_titles = state.get("current_selected_source_titles")
+    if current_selected_titles and isinstance(current_selected_titles, list) and len(current_selected_titles) > 0:
+        titles_branch = tree.add(f"[bold cyan]Selected Source Titles ({len(current_selected_titles)}):[/bold cyan]")
+        for title in current_selected_titles[:10]: # Display up to 10 titles
+            titles_branch.add(escape(title))
+        if len(current_selected_titles) > 10:
+            titles_branch.add("...")
+            
     # Show recent thoughts regardless of phase
-    if state["chain_of_thought"]:
-        thoughts_node = tree.add("[yellow]Recent Thoughts")
-        for thought in state["chain_of_thought"][-3:]:
-            thoughts_node.add(thought)
+    chain_of_thought = state.get("chain_of_thought", [])
+    if chain_of_thought:
+        thoughts_node = tree.add("[yellow]Recent Thoughts (Last 3)")
+        for thought in chain_of_thought[-3:]: # thought is already sanitized when added
+            thoughts_node.add(thought) 
     
-    # Show latest findings only in research phase
-    if phase == "Research" and state["findings"]:
-        findings_node = tree.add("[magenta]Latest Findings")
-        sections = state["findings"].split("\n\n")
+    # Show latest findings only in research phase (summary)
+    findings_text_state = state.get("findings","")
+    if phase == "Research" and findings_text_state:
+        findings_node = tree.add("[magenta]Latest Findings (Summary)")
+        sections = findings_text_state.split("\n\n")
         for section in sections[-2:]:
             if section.strip():
                 # Sanitize findings text to prevent markup errors

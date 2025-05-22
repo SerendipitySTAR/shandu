@@ -4,7 +4,7 @@ Contains functionality for handling search results, extracting content, and anal
 """
 
 import os
-from typing import List, Dict, Optional, Any, Union, TypedDict, Sequence
+from typing import List, Dict, Optional, Any, Union, TypedDict, Sequence, NotRequired # Added NotRequired
 from dataclasses import dataclass
 import json
 import time
@@ -43,6 +43,18 @@ class AgentState(TypedDict):
     initial_report: str
     enhanced_report: str
     final_report: str
+    chart_theme: str
+    chart_colors: Optional[str]
+    report_template: str
+    # New fields for granular progress tracking
+    current_extracted_themes: NotRequired[str]
+    current_selected_source_titles: NotRequired[List[str]]
+    last_node_activity: NotRequired[str]
+    # New fields for quality evaluation
+    quality_score: NotRequired[float]
+    quality_report: NotRequired[str]
+    # Flag for local KB usage
+    use_local_kb: bool 
 
 # Structured output models
 class UrlRelevanceResult(BaseModel):

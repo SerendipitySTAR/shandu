@@ -2,6 +2,7 @@
 Citation management system for tracking sources and their associated learnings.
 Provides functionality to link specific information with web sources and manage citations.
 """
+import os # Added for os.path.basename
 from typing import Dict, Any, List, Optional, Set, Union, Tuple
 from dataclasses import dataclass, field
 import re
@@ -24,12 +25,30 @@ class SourceInfo:
     reliability_score: float = 0.0  # 0.0 to 1.0
     extracted_content: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
+    visualizable_data: List[Dict[str, Any]] = field(default_factory=list)
+    # New fields for local file support
+    file_path: Optional[str] = None
+    original_filename: Optional[str] = None
+    creation_date: Optional[float] = None
+    last_modified_date: Optional[float] = None
     
     def __post_init__(self):
         """Initialize additional fields after creation."""
-        if not self.domain and self.url:
-            parsed_url = urlparse(self.url)
-            self.domain = parsed_url.netloc
+        if not self.domain and self.url and not self.url.startswith("file:///") and not self.url.startswith("localfile:"):
+            try:
+                parsed_url = urlparse(self.url)
+                if parsed_url.netloc:
+                    self.domain = parsed_url.netloc
+            except Exception: # pylint: disable=broad-except
+                # Invalid URL, cannot parse domain
+                pass # self.domain remains empty as initialized
+        
+        if self.file_path and self.original_filename is None:
+            try:
+                self.original_filename = os.path.basename(self.file_path)
+            except Exception: # pylint: disable=broad-except
+                # Handle cases where file_path might not be a valid path string for basename
+                pass # self.original_filename remains None
 
 @dataclass
 class Learning:
@@ -40,6 +59,7 @@ class Learning:
     category: str = ""  # e.g., "fact", "opinion", "definition"
     context: str = ""  # Additional context about how this information was derived
     source_quotes: List[str] = field(default_factory=list)  # Direct quotes supporting this learning
+    related_visualizations: List[str] = field(default_factory=list)
     hash_id: str = ""  # Unique identifier for deduplication
     
     def __post_init__(self):
@@ -333,34 +353,69 @@ class CitationManager:
             
         bibliography = "# References\n\n"
         
-        for entry in sorted(entries, key=lambda e: e["id"]):
+        for entry in sorted(entries, key=lambda e: e.get("id", 0)):
+            entry_id = entry.get('id', 'N/A')
+            title = entry.get('title', 'Unknown Title')
+            url = entry.get('url', 'No URL provided')
+            accessed_date = entry.get('accessed', 'Unknown Date')
+            
+            # Handle placeholder titles and URLs more gracefully
+            display_title = title if title != "Unknown Title" else "Title not available"
+            display_url = url if not url.startswith("unknown-source-") else "URL not available"
+
+            domain = "Unknown Website"
+            if display_url != "URL not available":
+                try:
+                    parsed_url = urlparse(url)
+                    if parsed_url.netloc:
+                        domain = parsed_url.netloc
+                except Exception: # pylint: disable=broad-except
+                    pass # Keep default domain
+
+            bib_entry = f"[{entry_id}] "
+
             if style == "apa":
-                bib_entry = f"[{entry['id']}] "
-                if entry.get("title"):
-                    bib_entry += f"{entry['title']}. "
-                if entry.get("url"):
-                    bib_entry += f"Retrieved from {entry['url']} "
-                if entry.get("accessed"):
-                    bib_entry += f"on {entry['accessed']}."
-                    
-                bibliography += bib_entry + "\n\n"
+                # APA: Title of work. (Accessed on Access Date). Retrieved from URL
+                bib_entry += f"{display_title}. "
+                if accessed_date != "Unknown Date":
+                    bib_entry += f"(Accessed on {accessed_date}). "
+                if display_url != "URL not available":
+                    bib_entry += f"Retrieved from {display_url}"
+                else:
+                    bib_entry += "URL not available."
+                bib_entry = bib_entry.strip() + "."
                 
             elif style == "mla":
-                bib_entry = f"[{entry['id']}] "
-                if entry.get("title"):
-                    bib_entry += f'"{entry["title"]}." '
-                if entry.get("url"):
-                    bib_entry += f"{entry['url']}, "
-                if entry.get("accessed"):
-                    bib_entry += f"accessed {entry['accessed']}."
-                    
-                bibliography += bib_entry + "\n\n"
-                
+                # MLA: "Title of Work." Website Name, accessed Access Date, URL.
+                bib_entry += f'"{display_title}." '
+                bib_entry += f"*{domain}*, "
+                if accessed_date != "Unknown Date":
+                    bib_entry += f"accessed {accessed_date}, "
+                if display_url != "URL not available":
+                    bib_entry += f"{display_url}."
+                else:
+                    bib_entry = bib_entry.strip().rstrip(',') + "." # Remove trailing comma if no URL
+
+            elif style == "chicago":
+                # Chicago: "Title of Page." Website Name. Accessed Access Date. URL.
+                bib_entry += f'"{display_title}." '
+                bib_entry += f"*{domain}*. "
+                if accessed_date != "Unknown Date":
+                    bib_entry += f"Accessed {accessed_date}. "
+                if display_url != "URL not available":
+                    bib_entry += f"{display_url}."
+                else:
+                    bib_entry = bib_entry.strip() + "."
+            
             else:  # Default format
-                bib_entry = f"[{entry['id']}] {entry.get('title', 'Unknown Title')}. {entry.get('url', 'No URL')}."
-                bibliography += bib_entry + "\n\n"
+                bib_entry += f"Title: {display_title} - URL: {display_url}"
+                if accessed_date != "Unknown Date":
+                    bib_entry += f" (Accessed: {accessed_date})"
+                bib_entry += "."
+
+            bibliography += bib_entry + "\n\n"
                 
-        return bibliography
+        return bibliography.strip()
     
     def get_learning_statistics(self) -> Dict[str, Any]:
         """

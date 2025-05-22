@@ -91,33 +91,46 @@ class CitationRegistry:
             text: The text content to validate citations in
             
         Returns:
-            Dict containing validation results with keys:
-            - valid: Boolean indicating if all citations are valid
-            - invalid_citations: Set of invalid citation IDs
-            - missing_citations: Set of citation IDs in the registry not used in the text
-            - used_citations: Set of citation IDs that are actually used in the text
-            - out_of_range_citations: Set of citation IDs that exceed the maximum registered ID
+            Dict containing detailed validation results.
         """
         import re
 
         citation_pattern = re.compile(r'\[(\d+)\]')
-        used_citations = set(int(cid) for cid in citation_pattern.findall(text) if cid.isdigit())
+        # All numeric IDs found in text via r'\[(\d+)\]'
+        used_citation_ids = set(int(cid) for cid in citation_pattern.findall(text) if cid.isdigit())
 
-        registry_ids = set(self.citations.keys())
-        invalid_citations = used_citations - registry_ids
-        missing_citations = registry_ids - used_citations
-        
-        # Identify citations that exceed the maximum registered ID
-        max_id = max(registry_ids) if registry_ids else 0
-        out_of_range_citations = {cid for cid in used_citations if cid > max_id}
+        # All IDs in self.citations.keys()
+        # Assuming self.citations keys are integers or string representations of integers
+        registered_citation_ids = set(int(key) for key in self.citations.keys())
 
-        invalid_citations = invalid_citations.union(out_of_range_citations)
+        # Max ID in self.citations.keys()
+        max_expected_citation_id = max(registered_citation_ids) if registered_citation_ids else 0
         
+        # In text & in registry & within range (implicitly, as they are in registered_citation_ids)
+        correctly_used_ids = used_citation_ids.intersection(registered_citation_ids)
+        
+        # In text, numeric, but > max_expected_citation_id
+        out_of_range_ids_in_text = {cid for cid in used_citation_ids if cid > max_expected_citation_id}
+        
+        # In text, numeric, within range (<= max_expected_citation_id), but not in registered_citation_ids
+        unregistered_ids_in_text = {
+            cid for cid in used_citation_ids 
+            if cid <= max_expected_citation_id and cid not in registered_citation_ids
+        }
+        
+        # In registry but not found in text
+        unused_registered_ids = registered_citation_ids - used_citation_ids
+        
+        # True if no out_of_range or unregistered citations
+        all_valid_citations_found_in_text = not out_of_range_ids_in_text and not unregistered_ids_in_text
+
         return {
-            "valid": len(invalid_citations) == 0,
-            "invalid_citations": invalid_citations,
-            "missing_citations": missing_citations,
-            "used_citations": used_citations,
-            "out_of_range_citations": out_of_range_citations,
-            "max_valid_id": max_id
+            "all_valid_citations_found_in_text": all_valid_citations_found_in_text,
+            "used_citation_ids": used_citation_ids,
+            "registered_citation_ids": registered_citation_ids,
+            "max_expected_citation_id": max_expected_citation_id,
+            "correctly_used_ids": correctly_used_ids,
+            "out_of_range_ids_in_text": out_of_range_ids_in_text,
+            "unregistered_ids_in_text": unregistered_ids_in_text,
+            "unused_registered_ids": unused_registered_ids
         }
