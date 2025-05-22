@@ -43,6 +43,9 @@ class AgentState(TypedDict):
     initial_report: str
     enhanced_report: str
     final_report: str
+    chart_theme: str
+    chart_colors: Optional[str]
+    report_template: str
 
 # Structured output models
 class UrlRelevanceResult(BaseModel):

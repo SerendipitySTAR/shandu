@@ -99,6 +99,8 @@ Deliver an exhaustive extraction of all relevant data, statistics, opinions, met
 
     "report_generation": """You must compile a comprehensive research report. Today's date: {{current_date}}.
 
+{{report_style_instructions}}
+
 MANDATORY REQUIREMENTS:
 1. DO NOT begin with a "Research Framework," "Objective," or any meta-commentary. Start with a # Title.
 2. The structure must be entirely dynamic with headings that reflect the content naturally.
@@ -143,6 +145,8 @@ REQUIREMENTS:
 
     "report_enhancement": """You must enhance an existing research report for greater depth and clarity. Today's date: {{current_date}}.
 
+{{report_style_instructions}}
+
 MANDATORY ENHANCEMENT DIRECTIVES:
 1. Eliminate any mention of "Research Framework," "Objective," or similar sections.
 2. Start with a # heading for the report title, with no meta-commentary.
@@ -160,6 +164,8 @@ CONTENT ENHANCEMENT:
 Your final product must be an authoritative work that exhibits academic-level depth, thoroughness, and clarity.""",
 
     "section_expansion": """You must significantly expand the specified section of the research report. Strictly adhere to the following:
+
+{{report_style_instructions}}
 
 - Add newly written paragraphs of in-depth analysis and context.
 - Employ extensive markdown for headings, tables, bold highlights, italics, code blocks, blockquotes, and lists.
@@ -202,6 +208,14 @@ Guidelines:
 5. Build upon prior steps to move toward a comprehensive final report.
 
 Your synthesis must be precise, deeply reasoned, and self-consistent. Provide multiple paragraphs of thorough explanation."""
+}
+
+# Report Style Guidelines
+REPORT_STYLE_GUIDELINES: Dict[str, str] = {
+    "standard": "The report should be comprehensive, well-structured, and objective, suitable for a general audience. Balance detail with clarity. Ensure a logical flow with clear headings and concise language where appropriate.",
+    "academic": "This report must adhere to academic standards. Employ a formal tone, precise terminology, and a logical structure (e.g., Abstract, Introduction, Literature Review, Methodology, Findings, Discussion, Conclusion). Argumentation should be rigorous and claims supported by robust evidence and detailed citations. Focus on contribution to knowledge.",
+    "business": "This report is for a business audience. Prioritize clarity, conciseness, and actionable insights. Start with an Executive Summary. Focus on practical implications, ROI, market analysis, or competitive landscape as appropriate. Use clear, direct language and avoid jargon where possible. Visual data representation is highly encouraged.",
+    "literature_review": "This report is a literature review. Synthesize existing research on the topic, identifying key themes, theoretical frameworks, methodologies, and findings from published scholarly works. Critically evaluate the literature, highlight gaps, and suggest directions for future research. The structure should include an Introduction, several thematic sections discussing the literature, a Discussion of gaps and inconsistencies, and a Conclusion."
 }
 
 # User prompts

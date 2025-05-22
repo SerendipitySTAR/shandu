@@ -3,12 +3,15 @@ import re
 import time
 import asyncio
 import traceback
+import json # Added for parsing LLM response for visualizable data
+import uuid # Added for generating unique chart filenames
 from typing import List, Dict, Any, Optional, Tuple
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel, Field
+from shandu.prompts import REPORT_STYLE_GUIDELINES, safe_format # Added import
 from ..processors.content_processor import AgentState
 from ..processors.report_generator import (
     generate_title, 
@@ -119,6 +122,147 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
     # Prepare all citation data
     citation_manager, citation_registry, citation_stats = await prepare_report_data(state)
 
+    # New Step: Extract visualizable data from sources
+    console.print("[bold blue]Extracting visualizable data from sources...[/]")
+    for source_info in citation_manager.sources.values():
+        if hasattr(source_info, 'extracted_content') and source_info.extracted_content:
+            try:
+                prompt = f"""Analyze the following text content and extract any data suitable for visualization.
+Structure the output as a JSON string representing a list of dictionaries. Each dictionary should describe one distinct dataset.
+Each dictionary must have the following keys:
+- "data_points": The actual data (e.g., [[1, 2], [3, 4]] for scatter/line, [10, 20, 30] for bar).
+- "data_type": A string describing the nature of the data (e.g., 'time-series', 'categorical_counts', 'comparison', 'distribution', 'table_data', 'list_of_values').
+- "potential_chart_types": A list of strings suggesting suitable chart types (e.g., ['line_chart', 'bar_chart', 'pie_chart', 'scatter_plot', 'table']).
+- "title_suggestion": A string for a potential chart title.
+- "x_axis_label_suggestion": (Optional) Suggested label for X-axis.
+- "y_axis_label_suggestion": (Optional) Suggested label for Y-axis.
+- "labels": (Optional) List of strings for labels (e.g., for pie chart slices or bar categories).
+- "description": A brief natural language description of what the data represents.
+
+If no visualizable data is found, return an empty list "[]".
+
+Ensure the output is a valid JSON string.
+
+Text content to analyze:
+---
+{source_info.extracted_content}
+---
+
+JSON output:
+"""
+                visual_data_llm = llm.with_config({"temperature": 0.0, "max_tokens": 2048}) # Use a specific LLM configuration if needed
+                response = await visual_data_llm.ainvoke(prompt)
+                
+                llm_output = response.content.strip()
+                
+                # Sometimes LLMs wrap JSON in ```json ... ```, try to extract it
+                if llm_output.startswith("```json"):
+                    llm_output = llm_output[7:]
+                    if llm_output.endswith("```"):
+                        llm_output = llm_output[:-3]
+                llm_output = llm_output.strip()
+
+                if not llm_output:
+                    console.print(f"[yellow]LLM returned empty response for visualizable data from source: {source_info.url}[/]")
+                    continue
+
+                parsed_visual_data = json.loads(llm_output)
+                
+                if isinstance(parsed_visual_data, list):
+                    # Basic validation of list items
+                    valid_items = []
+                    for item in parsed_visual_data:
+                        if isinstance(item, dict) and "data_points" in item and "data_type" in item:
+                            valid_items.append(item)
+                        else:
+                            console.print(f"[yellow]Skipping invalid item in visualizable data from LLM for source {source_info.url}: {item}[/yellow]")
+                    
+                    if valid_items:
+                        source_info.visualizable_data.extend(valid_items)
+                        console.print(f"[green]Successfully extracted {len(valid_items)} visualizable data items from: {source_info.url}[/]")
+                else:
+                    console.print(f"[yellow]LLM response for visualizable data from source {source_info.url} was not a list as expected: {parsed_visual_data}[/yellow]")
+
+            except json.JSONDecodeError as e:
+                console.print(f"[red]Error parsing JSON for visualizable data from LLM for source {source_info.url}: {e}[/]")
+                console.print(f"[red]LLM Output was: {llm_output}[/red]")
+            except Exception as e:
+                console.print(f"[red]Error extracting visualizable data for source {source_info.url}: {e}\n{traceback.format_exc()}[/]")
+            
+            # Step 3 (within source loop): Generate chart code for each visualizable data item
+            if source_info.visualizable_data:
+                console.print(f"[blue]Generating Matplotlib chart code for visualizable data in {source_info.url}...[/]")
+                for data_item_index, data_item in enumerate(source_info.visualizable_data):
+                    if not (isinstance(data_item, dict) and \
+                            data_item.get("potential_chart_types") and \
+                            data_item.get("data_points")):
+                        console.print(f"[yellow]Skipping chart code generation for invalid data_item in {source_info.url}: {data_item}[/yellow]")
+                        continue
+
+                    chosen_chart_type = data_item["potential_chart_types"][0] # Pick the first suggested
+                    chart_filename = f"chart_{uuid.uuid4().hex[:10]}.png"
+
+                    # Construct prompt for Matplotlib code generation
+                    chart_prompt_parts = [
+                        f"Generate a Python script using Matplotlib to create a '{chosen_chart_type}'.",
+                        "The script should be complete, executable, and save the chart to a file.",
+                        f"The data to plot is: {data_item['data_points']}",
+                        f"Save the generated chart as '{chart_filename}'."
+                    ]
+                    if data_item.get("title_suggestion"):
+                        chart_prompt_parts.append(f"Use the title: '{data_item['title_suggestion']}'.")
+                    if data_item.get("x_axis_label_suggestion"):
+                        chart_prompt_parts.append(f"Label the X-axis as: '{data_item['x_axis_label_suggestion']}'.")
+                    if data_item.get("y_axis_label_suggestion"):
+                        chart_prompt_parts.append(f"Label the Y-axis as: '{data_item['y_axis_label_suggestion']}'.")
+                    if data_item.get("labels"): # For things like pie chart labels or bar categories
+                        chart_prompt_parts.append(f"Use these labels for data segments/categories: {data_item['labels']}.")
+                    
+                    chart_prompt_parts.extend([
+                        "The script should include all necessary imports (e.g., `import matplotlib.pyplot as plt`).",
+                        "Ensure the plot is properly shown and then closed to free up memory (e.g., `plt.show()` then `plt.close()` or just `plt.savefig()` and `plt.close()`). For backend execution, prefer `plt.savefig()` and `plt.close()`.",
+                        "Output ONLY the Python code block. Do not include any explanations, comments outside the code, or markdown formatting like ```python ... ```."
+                    ])
+                    
+                    chart_code_prompt = "\n".join(chart_prompt_parts)
+
+                    try:
+                        chart_code_llm = llm.with_config({"temperature": 0.0, "max_tokens": 1500}) # LLM for code gen
+                        response = await chart_code_llm.ainvoke(chart_code_prompt)
+                        generated_code = response.content.strip()
+
+                        # Clean up potential markdown formatting if LLM didn't follow instructions perfectly
+                        if generated_code.startswith("```python"):
+                            generated_code = generated_code[9:]
+                            if generated_code.endswith("```"):
+                                generated_code = generated_code[:-3]
+                        elif generated_code.startswith("```"): # More generic ``` removal
+                            generated_code = generated_code[3:]
+                            if generated_code.endswith("```"):
+                                generated_code = generated_code[:-3]
+                        generated_code = generated_code.strip()
+                        
+                        if not generated_code or not "plt.savefig" in generated_code : # Basic check for valid code
+                            console.print(f"[red]LLM generated empty or invalid (missing savefig) Matplotlib code for a data_item in {source_info.url}. Skipping.[/red]")
+                            console.print(f"[red]Prompt was:\n{chart_code_prompt}\nOutput was:\n{generated_code}[/red]")
+                            continue
+
+                        # Store the generated code and filename in the data_item
+                        data_item['matplotlib_code'] = generated_code
+                        data_item['chart_filename'] = chart_filename 
+                        # Update the item in the list directly (though it's already a reference, this is explicit)
+                        source_info.visualizable_data[data_item_index] = data_item 
+                        
+                        console.print(f"[green]Successfully generated Matplotlib code for '{chart_filename}' from data in {source_info.url}[/green]")
+
+                    except Exception as e:
+                        console.print(f"[red]Error generating Matplotlib code for a data_item in {source_info.url}: {e}\n{traceback.format_exc()}[/]")
+                        console.print(f"[red]Problematic data_item: {data_item}[/red]")
+
+        else:
+            console.print(f"[yellow]Skipping visualizable data extraction for source {source_info.url} due to missing or empty extracted_content.[/]")
+    # End of new step for visualizable data extraction
+
     # Step 1: Generate report title (with retries)
     report_title = None
     for attempt in range(MAX_RETRIES):
@@ -171,9 +315,17 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
     ) as progress:
         task = progress.add_task("Generating", total=1)
         
+        report_template_style = state.get('report_template', "standard")
+        style_instructions = REPORT_STYLE_GUIDELINES.get(report_template_style, REPORT_STYLE_GUIDELINES['standard'])
+        
         initial_report = None
         for attempt in range(MAX_RETRIES):
             try:
+                # Assuming generate_initial_report can now accept style_instructions
+                # or its internal prompt formatting can be influenced by passing it.
+                # If generate_initial_report directly uses SYSTEM_PROMPTS["report_generation"],
+                # it would need to format it with style_instructions.
+                # For this subtask, we pass it as an argument.
                 initial_report = await generate_initial_report(
                     llm,
                     state['query'],
@@ -185,7 +337,8 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
                     current_date,
                     state['detail_level'],
                     include_objective,
-                    citation_registry
+                    citation_registry,
+                    report_style_instructions=style_instructions # New argument
                 )
                 progress.update(task, completed=1)
                 break
@@ -291,8 +444,13 @@ async def enhance_report_node(llm, progress_callback, state: AgentState) -> Agen
                     # Configure LLM for this section enhancement
                     enhance_llm = llm.with_config({"max_tokens": 4096, "temperature": 0.2})
                     
+                    report_template_style = state.get('report_template', "standard")
+                    style_instructions = REPORT_STYLE_GUIDELINES.get(report_template_style, REPORT_STYLE_GUIDELINES['standard'])
+
                     # Create section-specific enhancement prompt
-                    section_prompt = f"""Enhance this section of a research report with additional depth and detail:
+                    section_prompt = f"""{style_instructions}
+
+Enhance this section of a research report with additional depth and detail:
 
 {section_header}{section_content}{available_sources_text}
 
@@ -436,9 +594,14 @@ async def expand_key_sections_node(llm, progress_callback, state: AgentState) ->
                     
                     # Configure LLM for this section expansion
                     expand_llm = llm.with_config({"max_tokens": 6144, "temperature": 0.2})
+
+                    report_template_style = state.get('report_template', "standard")
+                    style_instructions = REPORT_STYLE_GUIDELINES.get(report_template_style, REPORT_STYLE_GUIDELINES['standard'])
                     
                     # Create section-specific expansion prompt
-                    section_prompt = f"""Expand this section of a research report with much greater depth and detail:
+                    section_prompt = f"""{style_instructions}
+
+Expand this section of a research report with much greater depth and detail:
 
 {section_header}{section_content}{available_sources_text}
 
@@ -746,14 +909,72 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
     state["findings"] = final_report
     state["status"] = "Complete"
 
+    # Simulate chart execution and embed into final_report
+    executed_charts_info_list = []
+    chart_output_dir = "charts" # Relative directory for charts
+
+    if "citation_manager" in state and state["citation_manager"]:
+        citation_manager = state["citation_manager"]
+        if hasattr(citation_manager, 'sources') and isinstance(citation_manager.sources, dict):
+            console.print("[bold blue]Simulating chart execution and preparing for report embedding...[/]")
+            for source_url, source_info in citation_manager.sources.items():
+                if hasattr(source_info, 'visualizable_data') and isinstance(source_info.visualizable_data, list):
+                    for data_item_idx, data_item in enumerate(source_info.visualizable_data):
+                        if isinstance(data_item, dict) and \
+                           data_item.get('matplotlib_code') and \
+                           data_item.get('chart_filename'):
+                            
+                            chart_code = data_item['matplotlib_code']
+                            original_chart_filename = data_item['chart_filename']
+                            chart_title = data_item.get('title_suggestion', f"Chart {len(executed_charts_info_list) + 1}")
+                            
+                            # Simulate execution and define path for Markdown
+                            md_chart_path = f"{chart_output_dir}/{original_chart_filename}"
+                            
+                            console.print(f"[cyan]SIMULATING CHART EXECUTION: Chart code for '{original_chart_filename}' (Source: {source_url}, Item: {data_item_idx}) would be executed.[/cyan]")
+                            console.print(f"[cyan]Image would be saved to '{md_chart_path}'.[/cyan]")
+                            # In a real scenario, you would execute chart_code here and save the file.
+                            # For example:
+                            # try:
+                            #   exec(chart_code, globals()) # Be very careful with exec in real systems
+                            #   console.print(f"[green]Successfully executed and saved {original_chart_filename}[/green]")
+                            # except Exception as e:
+                            #   console.print(f"[red]Error executing chart code for {original_chart_filename}: {e}[/red]")
+
+                            executed_charts_info_list.append({
+                                'md_path': md_chart_path,
+                                'title': chart_title,
+                                'original_filename': original_chart_filename
+                            })
+                        else:
+                            # Log if a visualizable item is missing necessary fields for chart generation
+                            # This helps in debugging if charts are expected but not generated
+                            if isinstance(data_item, dict) and (not data_item.get('matplotlib_code') or not data_item.get('chart_filename')):
+                                console.print(f"[yellow]Skipping chart embedding for a visualizable_data item in {source_url} (idx: {data_item_idx}) due to missing 'matplotlib_code' or 'chart_filename'.[/yellow]")
+
+
+    if executed_charts_info_list:
+        charts_markdown_section = "\n\n## Visualizations\n\n"
+        for chart_info in executed_charts_info_list:
+            # Ensure title doesn't break Markdown image alt text or header
+            safe_title = chart_info['title'].replace('"', "'").replace('\n', ' ') 
+            charts_markdown_section += f"### {safe_title}\n"
+            charts_markdown_section += f"![{safe_title}]({chart_info['md_path']})\n\n"
+        
+        # Append the new charts section to the final report
+        final_report += charts_markdown_section
+        state["findings"] = final_report # Update state with the report including charts
+        console.print(f"[green]Appended {len(executed_charts_info_list)} chart references to the final report.[/green]")
+
+
     if "citation_manager" in state:
         citation_stats = state["citation_manager"].get_learning_statistics()
         log_chain_of_thought(
             state, 
-            f"Generated final report after {minutes}m {seconds}s with {citation_stats.get('total_sources', 0)} sources and {citation_stats.get('total_learnings', 0)} tracked learnings"
+            f"Generated final report after {minutes}m {seconds}s with {citation_stats.get('total_sources', 0)} sources and {citation_stats.get('total_learnings', 0)} tracked learnings, including {len(executed_charts_info_list)} chart simulations."
         )
     else:
-        log_chain_of_thought(state, f"Generated final report after {minutes}m {seconds}s")
+        log_chain_of_thought(state, f"Generated final report after {minutes}m {seconds}s, including {len(executed_charts_info_list)} chart simulations.")
     
     if progress_callback:
         await _call_progress_callback(progress_callback, state)

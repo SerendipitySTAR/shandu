@@ -304,8 +304,16 @@ def clean(force: bool, cache_only: bool):
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed progress")
 @click.option("--strategy", "-s", default="langgraph", type=click.Choice(["langgraph", "agent"]), 
               help="Research strategy to use")
-@click.option("--include-chain-of-thought", "-c", is_flag=True, help="Include chain of thought in report")
+@click.option("--include-chain-of_thought", "-c", is_flag=True, help="Include chain of thought in report") # Corrected option name
 @click.option("--include-objective", "-i", is_flag=True, help="Include objective section in report")
+@click.option("--chart-theme", default="default", type=str, help="Theme for generated charts (e.g., 'default', 'ggplot', 'seaborn-darkgrid').")
+@click.option("--chart-colors", default=None, type=str, help="Comma-separated list of preferred colors for charts (e.g., '#FF5733,#33FF57').")
+@click.option(
+    "--report-type",
+    default="standard",
+    type=click.Choice(["standard", "academic", "business", "literature_review"], case_sensitive=False),
+    help="Type of report to generate."
+)
 def research(
     query: str, 
     depth: Optional[int], 
@@ -313,8 +321,11 @@ def research(
     output: Optional[str], 
     verbose: bool,
     strategy: str,
-    include_chain_of_thought: bool,
-    include_objective: bool
+    include_chain_of_thought: bool, # Corrected parameter name
+    include_objective: bool,
+    chart_theme: str,
+    chart_colors: Optional[str],
+    report_type: str
 ):
     """Perform deep research on a topic."""
     if depth is None:
@@ -400,7 +411,10 @@ def research(
                     depth=depth,
                     breadth=breadth,
                     progress_callback=debounced_update_display,
-                    include_objective=include_objective
+                    include_objective=include_objective,
+                    chart_theme=chart_theme,
+                    chart_colors=chart_colors,
+                    report_template=report_type # Pass report_type as report_template
                 )
             except KeyboardInterrupt:
                 console.print("\n[yellow]Research interrupted by user.[/]")

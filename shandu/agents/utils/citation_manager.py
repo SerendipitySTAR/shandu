@@ -24,6 +24,7 @@ class SourceInfo:
     reliability_score: float = 0.0  # 0.0 to 1.0
     extracted_content: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
+    visualizable_data: List[Dict[str, Any]] = field(default_factory=list)
     
     def __post_init__(self):
         """Initialize additional fields after creation."""
@@ -40,6 +41,7 @@ class Learning:
     category: str = ""  # e.g., "fact", "opinion", "definition"
     context: str = ""  # Additional context about how this information was derived
     source_quotes: List[str] = field(default_factory=list)  # Direct quotes supporting this learning
+    related_visualizations: List[str] = field(default_factory=list)
     hash_id: str = ""  # Unique identifier for deduplication
     
     def __post_init__(self):

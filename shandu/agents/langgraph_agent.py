@@ -100,7 +100,10 @@ class ResearchGraph:
         breadth: int = 4, 
         progress_callback: Optional[Callable[[AgentState], None]] = None,
         include_objective: bool = False,
-        detail_level: str = "high" 
+        detail_level: str = "high",
+        chart_theme: Optional[str] = "default",
+        chart_colors: Optional[str] = None,
+        report_template: str = "standard"
     ) -> ResearchResult:
         """Execute research process on a query."""
         self.progress_callback = progress_callback
@@ -130,7 +133,10 @@ class ResearchGraph:
             identified_themes="",
             initial_report="",
             enhanced_report="",
-            final_report=""
+            final_report="",
+            chart_theme=chart_theme if chart_theme is not None else "default",
+            chart_colors=chart_colors,
+            report_template=report_template
         )
         
         try:
@@ -191,11 +197,14 @@ class ResearchGraph:
         breadth: int = 4, 
         progress_callback: Optional[Callable[[AgentState], None]] = None,
         include_objective: bool = False,
-        detail_level: str = "high"
+        detail_level: str = "high",
+        chart_theme: Optional[str] = "default",
+        chart_colors: Optional[str] = None,
+        report_template: str = "standard"
     ) -> ResearchResult:
         """Synchronous wrapper for research."""
         try:
-            return asyncio.run(self.research(query, depth, breadth, progress_callback, include_objective, detail_level))
+            return asyncio.run(self.research(query, depth, breadth, progress_callback, include_objective, detail_level, chart_theme, chart_colors, report_template))
         except KeyboardInterrupt:
             console.print("\n[yellow]Research interrupted by user.[/]")
             raise
