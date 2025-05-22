@@ -30,7 +30,8 @@ from .nodes import (
     generate_initial_report_node,
     enhance_report_node,
     expand_key_sections_node,
-    report_node
+    report_node,
+    evaluate_quality_node # Added import
 )
 from .graph import build_graph, create_node_wrapper
 
@@ -78,6 +79,7 @@ class ResearchGraph:
         enhance = create_node_wrapper(lambda state: enhance_report_node(self.llm, self.progress_callback, state))
         expand_sections = create_node_wrapper(lambda state: expand_key_sections_node(self.llm, self.progress_callback, state))
         final_report = create_node_wrapper(lambda state: report_node(self.llm, self.progress_callback, state))
+        eval_quality = create_node_wrapper(lambda state: evaluate_quality_node(self.llm, self.progress_callback, state)) # New wrapper
         
         # Build graph with these node functions
         return build_graph(
@@ -90,7 +92,8 @@ class ResearchGraph:
             initial_report,
             enhance,
             expand_sections,
-            final_report
+            final_report,
+            eval_quality # New argument
         )
 
     async def research(
@@ -100,7 +103,7 @@ class ResearchGraph:
         breadth: int = 4, 
         progress_callback: Optional[Callable[[AgentState], None]] = None,
         include_objective: bool = False,
-        detail_level: str = "high",
+        detail_level: str = "standard",
         chart_theme: Optional[str] = "default",
         chart_colors: Optional[str] = None,
         report_template: str = "standard"

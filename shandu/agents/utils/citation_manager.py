@@ -332,37 +332,54 @@ class CitationManager:
         """
         if not entries:
             return "No sources cited."
-            
+
+        supported_styles = ["apa", "mla", "chicago"]
+        if style.lower() not in supported_styles:
+            print(f"Warning: Unsupported citation style '{style}'. Defaulting to 'apa'.")
+            style = "apa"
+        else:
+            style = style.lower() # Ensure consistent case
+
         bibliography = "# References\n\n"
         
         for entry in sorted(entries, key=lambda e: e["id"]):
+            entry_id = entry['id']
+            title = entry.get('title', 'Unknown Title')
+            url = entry.get('url', 'No URL')
+            accessed_date = entry.get('accessed', 'Unknown Date') # Format YYYY-MM-DD or "Unknown Date"
+
+            bib_entry = f"[{entry_id}] "
+
             if style == "apa":
-                bib_entry = f"[{entry['id']}] "
-                if entry.get("title"):
-                    bib_entry += f"{entry['title']}. "
-                if entry.get("url"):
-                    bib_entry += f"Retrieved from {entry['url']} "
-                if entry.get("accessed"):
-                    bib_entry += f"on {entry['accessed']}."
-                    
-                bibliography += bib_entry + "\n\n"
+                # Format: [{id}] {Title}. ({Accessed Date}). Retrieved from {URL}
+                # Simplified APA for web content without author
+                bib_entry += f"{title}."
+                if accessed_date != "Unknown Date":
+                    bib_entry += f" ({accessed_date})."
+                bib_entry += f" Retrieved from {url}"
                 
             elif style == "mla":
-                bib_entry = f"[{entry['id']}] "
-                if entry.get("title"):
-                    bib_entry += f'"{entry["title"]}." '
-                if entry.get("url"):
-                    bib_entry += f"{entry['url']}, "
-                if entry.get("accessed"):
-                    bib_entry += f"accessed {entry['accessed']}."
-                    
-                bibliography += bib_entry + "\n\n"
+                # Format: [{id}] "{Title}." *{Website Name}*, {Accessed Date}, {URL}.
+                website_name = urlparse(url).netloc if url != 'No URL' else "Unknown Website"
+                bib_entry += f'"{title}." '
+                bib_entry += f"*{website_name}*"
+                if accessed_date != "Unknown Date":
+                    bib_entry += f", {accessed_date}" # MLA uses "Day Month Year" typically, but we have YYYY-MM-DD
+                bib_entry += f", {url}."
                 
-            else:  # Default format
-                bib_entry = f"[{entry['id']}] {entry.get('title', 'Unknown Title')}. {entry.get('url', 'No URL')}."
-                bibliography += bib_entry + "\n\n"
+            elif style == "chicago":
+                # Format (Bibliography): [{id}] {Title}. {Website Name}. Accessed {Accessed Date}. {URL}.
+                # Simplified Chicago for web content without author
+                website_name = urlparse(url).netloc if url != 'No URL' else "Unknown Website"
+                bib_entry += f'"{title}." ' # Webpage titles are often quoted in Chicago
+                bib_entry += f"{website_name}."
+                if accessed_date != "Unknown Date":
+                    bib_entry += f" Accessed {accessed_date}." # "Accessed Day Month Year." is common
+                bib_entry += f" {url}."
+            
+            bibliography += bib_entry + "\n\n"
                 
-        return bibliography
+        return bibliography.strip() # Remove trailing newlines
     
     def get_learning_statistics(self) -> Dict[str, Any]:
         """

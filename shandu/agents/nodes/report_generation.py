@@ -50,6 +50,33 @@ class FinalReport(BaseModel):
 # Maximum retry attempts for report generation processes
 MAX_RETRIES = 3
 
+# Helper function for detail level instructions
+def _get_length_instruction(detail_level: str) -> str:
+    """Generates a prompt instruction based on the detail_level."""
+    if detail_level == "brief":
+        return "Please be very concise and summarize heavily. Focus only on the absolute key points. The section should be significantly shorter than standard."
+    elif detail_level == "detailed":
+        return "Please be highly expansive. Add considerable depth, more examples, and detailed explanations. The section should be significantly longer and more thorough than standard."
+    elif detail_level.startswith("custom_"):
+        try:
+            parts = detail_level.split('_', 1)
+            if len(parts) > 1 and parts[1].isdigit():
+                word_count = int(parts[1])
+                return f"Aim for this section to be approximately {word_count} words long. Adjust content depth and breadth accordingly."
+            else:
+                # Fallback if parsing fails (e.g. "custom_" without number or "custom_abc")
+                print(f"Warning: Could not parse word count from detail_level '{detail_level}'. Defaulting to standard detail instructions.")
+                return "Provide a balanced level of detail."
+        except ValueError: # Handles if int() conversion fails for some reason
+            print(f"Warning: Invalid number format in detail_level '{detail_level}'. Defaulting to standard detail instructions.")
+            return "Provide a balanced level of detail."
+    elif detail_level == "standard":
+        return "Provide a balanced level of detail." # Neutral instruction for standard
+    else: # Fallback for any other unknown value
+        # It's good practice to log/warn about unexpected values
+        print(f"Warning: Unknown detail_level '{detail_level}'. Defaulting to standard detail instructions.")
+        return "Provide a balanced level of detail."
+
 async def prepare_report_data(state: AgentState) -> Tuple[CitationManager, CitationRegistry, Dict[str, Any]]:
     """
     Prepare all necessary data for report generation, ensuring sources are correctly registered.
@@ -290,6 +317,13 @@ JSON output:
                 console.print("[yellow]Using fallback themes structure[/]")
 
     # Step 3: Format citations (with retries)
+    # (Themes are extracted before this, but callback for themes is after this and before initial report generation)
+    # Store identified themes and call progress callback
+    state["identified_themes"] = extracted_themes
+    log_chain_of_thought(state, f"Extracted themes for the report: {str(extracted_themes)[:200]}...") # Log a snippet
+    if progress_callback: # Explicitly call callback for themes
+        await _call_progress_callback(progress_callback, state)
+
     formatted_citations = None
     for attempt in range(MAX_RETRIES):
         try:
@@ -358,7 +392,7 @@ JSON output:
                     progress.update(task, completed=1)
 
     # Store data for later stages
-    state["identified_themes"] = extracted_themes
+    # state["identified_themes"] = extracted_themes # Already set before format_citations
     state["initial_report"] = initial_report
     state["formatted_citations"] = formatted_citations
     state["report_title"] = report_title
@@ -446,9 +480,13 @@ async def enhance_report_node(llm, progress_callback, state: AgentState) -> Agen
                     
                     report_template_style = state.get('report_template', "standard")
                     style_instructions = REPORT_STYLE_GUIDELINES.get(report_template_style, REPORT_STYLE_GUIDELINES['standard'])
+                    
+                    current_detail_level = state.get('detail_level', 'standard')
+                    length_instruction = _get_length_instruction(current_detail_level)
 
                     # Create section-specific enhancement prompt
                     section_prompt = f"""{style_instructions}
+{length_instruction}
 
 Enhance this section of a research report with additional depth and detail:
 
@@ -597,18 +635,48 @@ async def expand_key_sections_node(llm, progress_callback, state: AgentState) ->
 
                     report_template_style = state.get('report_template', "standard")
                     style_instructions = REPORT_STYLE_GUIDELINES.get(report_template_style, REPORT_STYLE_GUIDELINES['standard'])
+
+                    current_detail_level = state.get('detail_level', 'standard')
+                    length_instruction = _get_length_instruction(current_detail_level)
+                    
+                    # Base expansion requirements
+                    expansion_requirements_list = [
+                        "2. Add specific examples, case studies, or data points to support claims",
+                        "3. Include additional context and background information",
+                        "4. Add nuance, caveats, and alternative perspectives",
+                        "5. Use proper citation format [n] throughout",
+                        "6. Maintain the existing section structure but add subsections if appropriate",
+                        f"7. Ensure all information is accurate as of {current_date}"
+                    ]
+
+                    # Dynamically set the first expansion requirement based on detail_level
+                    if current_detail_level == "brief":
+                        # For "brief", the length_instruction already covers conciseness.
+                        # The general "Expand" instruction from the prompt title is toned down by length_instruction.
+                        # We might remove or alter the explicit "Triple the length" type of instruction here.
+                        # For now, length_instruction will be prepended and should guide the LLM.
+                        # No specific length modification here, rely on the prepended length_instruction.
+                        pass # length_instruction will guide
+                    elif current_detail_level.startswith("custom_"):
+                        # length_instruction already specifies the word count.
+                        pass # length_instruction will guide
+                    elif current_detail_level == "detailed":
+                        expansion_requirements_list.insert(0, "1. Substantially expand the length and detail of the section, aiming for a comprehensive and in-depth exploration, significantly longer than a standard treatment.")
+                    else: # Standard detail level
+                        expansion_requirements_list.insert(0, "1. Moderately expand the length and detail of the section, providing a balanced increase in depth and breadth.")
+
+                    expansion_requirements = "\n".join(expansion_requirements_list)
                     
                     # Create section-specific expansion prompt
                     section_prompt = f"""{style_instructions}
+{length_instruction}
 
-Expand this section of a research report with much greater depth and detail:
+Expand this section of a research report:
 
 {section_header}{section_content}{available_sources_text}
 
 EXPANSION REQUIREMENTS:
-1. Triple the length and detail of the section while maintaining accuracy
-2. Add specific examples, case studies, or data points to support claims
-3. Include additional context and background information
+{expansion_requirements}
 4. Add nuance, caveats, and alternative perspectives
 5. Use proper citation format [n] throughout
 6. Maintain the existing section structure but add subsections if appropriate
@@ -867,8 +935,17 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
                     
                     # Use the citation manager's bibliography formatter with APA style
                     if bibliography_entries:
-                        formatted_citations = citation_manager.format_bibliography(bibliography_entries, "apa")
-                        console.print(f"[bold green]Generated enhanced bibliography with {len(bibliography_entries)} entries[/]")
+                        report_template = state.get('report_template', 'standard')
+                        citation_style = "apa" # Default
+                        if report_template == "academic":
+                            citation_style = "apa"
+                        elif report_template == "literature_review":
+                            citation_style = "mla"
+                        elif report_template == "business":
+                            citation_style = "apa"
+                        
+                        formatted_citations = citation_manager.format_bibliography(bibliography_entries, style=citation_style)
+                        console.print(f"[bold green]Generated enhanced bibliography with {len(bibliography_entries)} entries using '{citation_style}' style.[/bold green]")
                 # Fall back to regular citation formatting
                 elif used_citations:
 

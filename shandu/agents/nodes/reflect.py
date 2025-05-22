@@ -157,6 +157,14 @@ Include:
             state["messages"].append(HumanMessage(content="Analyzing current findings..."))
             state["messages"].append(AIMessage(content=minimal_reflection))
             state["findings"] += f"\n\n## Reflection on Current Findings\n\n{minimal_reflection}\n\n"
+
+    user_guidance_message = (
+        "User Guidance: The preceding reflection offers insights into the research so far. "
+        "If you wish to adjust the research direction or priorities based on these insights, "
+        "you can consider stopping this run (Ctrl+C) and restarting the research with a refined query. "
+        "Otherwise, the process will continue based on the current plan."
+    )
+    log_chain_of_thought(state, user_guidance_message)
     
     log_chain_of_thought(state, "Completed reflection on current findings")
     if progress_callback:

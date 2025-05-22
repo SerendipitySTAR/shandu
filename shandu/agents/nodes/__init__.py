@@ -14,6 +14,7 @@ from .report_generation import (
     expand_key_sections_node,
     report_node
 )
+from .quality_evaluation import evaluate_quality_node # Added import
 
 __all__ = [
     'initialize_node',
@@ -25,5 +26,6 @@ __all__ = [
     'generate_initial_report_node',
     'enhance_report_node',
     'expand_key_sections_node',
-    'report_node'
+    'report_node',
+    'evaluate_quality_node' # Added to __all__
 ]

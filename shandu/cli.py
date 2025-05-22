@@ -123,9 +123,11 @@ def create_research_dashboard(state: AgentState) -> Layout:
         Layout(name="findings")
     )
     layout["right"].split(
-        Layout(name="queries"),
-        Layout(name="sources"),
-        Layout(name="chain_of_thought")
+        Layout(name="queries", ratio=2, minimum_size=3),
+        Layout(name="selected_sources_panel", ratio=3, minimum_size=3),
+        Layout(name="themes_panel", ratio=3, minimum_size=3),
+        Layout(name="sources_type_count_panel", ratio=2, minimum_size=3), # Renamed from "sources"
+        Layout(name="chain_of_thought", ratio=2, minimum_size=3)
     )
     
     elapsed_time = time.time() - state["start_time"]
@@ -166,7 +168,34 @@ def create_research_dashboard(state: AgentState) -> Layout:
         source_counts[source_type] = source_counts.get(source_type, 0) + 1
     for source_type, count in source_counts.items():
         sources_table.add_row(source_type, str(count))
-    layout["sources"].update(Panel(sources_table, title="Sources"))
+    layout["sources_type_count_panel"].update(Panel(sources_table, title="Source Types Count"))
+
+    # Panel for Selected Key Sources
+    selected_sources_content = "No sources selected yet..."
+    if state.get("selected_sources"):
+        selected_sources_list = state["selected_sources"]
+        if selected_sources_list:
+            # Display up to 5 selected sources, plus a count if more
+            display_max = 5
+            selected_sources_display = "\n".join(selected_sources_list[:display_max])
+            if len(selected_sources_list) > display_max:
+                selected_sources_display += f"\n...and {len(selected_sources_list) - display_max} more."
+            selected_sources_content = selected_sources_display
+        else:
+            selected_sources_content = "Source selection complete, but no sources were chosen."
+            
+    layout["selected_sources_panel"].update(Panel(selected_sources_content, title="Selected Key Sources"))
+
+    # Panel for Identified Themes
+    themes_content = "No themes identified yet..."
+    if state.get("identified_themes"):
+        identified_themes_text = state["identified_themes"]
+        if identified_themes_text and isinstance(identified_themes_text, str) and identified_themes_text.strip():
+            # Use Markdown for themes as they might have formatting
+            themes_content = Markdown(identified_themes_text)
+        elif not identified_themes_text.strip(): # Check if it's an empty string after stripping
+             themes_content = "Themes extraction attempted, but no themes were found."
+    layout["themes_panel"].update(Panel(themes_content, title="Report Outline Themes"))
     
     cot_text = "\n".join(state["chain_of_thought"][-5:]) if state["chain_of_thought"] else "No thoughts recorded yet..."
     layout["chain_of_thought"].update(Panel(cot_text, title="Chain of Thought"))
@@ -314,6 +343,12 @@ def clean(force: bool, cache_only: bool):
     type=click.Choice(["standard", "academic", "business", "literature_review"], case_sensitive=False),
     help="Type of report to generate."
 )
+@click.option(
+    "--report-detail",
+    default="standard",
+    type=str,
+    help="Set the detail level for the report: 'brief', 'standard', 'detailed', or 'custom_WORDCOUNT' (e.g., 'custom_1500')."
+)
 def research(
     query: str, 
     depth: Optional[int], 
@@ -325,7 +360,8 @@ def research(
     include_objective: bool,
     chart_theme: str,
     chart_colors: Optional[str],
-    report_type: str
+    report_type: str,
+    report_detail: str
 ):
     """Perform deep research on a topic."""
     if depth is None:
@@ -414,7 +450,8 @@ def research(
                     include_objective=include_objective,
                     chart_theme=chart_theme,
                     chart_colors=chart_colors,
-                    report_template=report_type # Pass report_type as report_template
+                    report_template=report_type, # Pass report_type as report_template
+                    detail_level=report_detail # Pass report_detail as detail_level
                 )
             except KeyboardInterrupt:
                 console.print("\n[yellow]Research interrupted by user.[/]")
