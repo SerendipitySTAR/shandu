@@ -24,7 +24,9 @@ from rich.table import Table
 from rich.layout import Layout
 from rich.syntax import Syntax
 from langchain_openai import ChatOpenAI
+
 from .config import config
+from .local_kb.kb import LocalKB # Added for KB management
 from .agents.langgraph_agent import clarify_query, display_research_progress
 from .agents.langgraph_agent import ResearchGraph, AgentState
 from .search.search import UnifiedSearcher
@@ -217,6 +219,19 @@ def cli():
     display_banner()
     pass
 
+# Helper function to get LocalKB instance
+def get_kb_manager():
+    """Initializes and returns a LocalKB instance based on global config."""
+    kb_dir = config.get("local_kb", "kb_dir", "local_kb_data")
+    # Ensure kb_dir is absolute if it's meant to be, or handle relative paths consistently.
+    # LocalKB itself should ideally manage making the path absolute if needed.
+    try:
+        return LocalKB(kb_dir=kb_dir)
+    except Exception as e:
+        console.print(f"[red]Error initializing Local Knowledge Base: {sanitize_error(e)}[/]")
+        console.print(f"[yellow]Please ensure dependencies like 'sentence-transformers' and 'faiss-cpu' are installed, and the embedding model path is correct.[/]")
+        sys.exit(1)
+
 @cli.command()
 def configure():
     """Configure API settings."""
@@ -349,6 +364,7 @@ def clean(force: bool, cache_only: bool):
     type=str,
     help="Set the detail level for the report: 'brief', 'standard', 'detailed', or 'custom_WORDCOUNT' (e.g., 'custom_1500')."
 )
+@click.option("--local-files", "-lf", default=None, type=str, help="Comma-separated list of local file paths to include in the research context.")
 def research(
     query: str, 
     depth: Optional[int], 
@@ -361,7 +377,8 @@ def research(
     chart_theme: str,
     chart_colors: Optional[str],
     report_type: str,
-    report_detail: str
+    report_detail: str,
+    local_files: Optional[str]
 ):
     """Perform deep research on a topic."""
     if depth is None:
@@ -390,7 +407,54 @@ def research(
     
     searcher = UnifiedSearcher()
     scraper = WebScraper(proxy=config.get("scraper", "proxy"))
-    
+
+    session_kb_dir_override = None
+    original_kb_dir_config = config.get("local_kb", "kb_dir")
+    temp_session_kb_path = None
+
+    if local_files:
+        console.print("[bold yellow]Processing local files for this research session...[/]")
+        files_to_add = [f.strip() for f in local_files.split(',')]
+        valid_files = []
+        for f_path in files_to_add:
+            if os.path.exists(f_path) and os.path.isfile(f_path):
+                valid_files.append(os.path.abspath(f_path))
+            else:
+                console.print(f"[red]Warning: Local file '{f_path}' not found or is not a file. Skipping.[/red]")
+        
+        if valid_files:
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            # Create a unique temporary directory for this session's KB
+            # Default parent is the configured kb_dir, or 'local_kb_data' if not set
+            base_kb_parent_dir = original_kb_dir_config or "local_kb_data" 
+            os.makedirs(base_kb_parent_dir, exist_ok=True) # Ensure parent exists
+
+            temp_session_kb_path = os.path.join(base_kb_parent_dir, f"session_kb_{timestamp}")
+            os.makedirs(temp_session_kb_path, exist_ok=True)
+            
+            console.print(f"Initializing temporary Local KB for session at: {temp_session_kb_path}")
+            try:
+                session_kb = LocalKB(kb_dir=temp_session_kb_path)
+                for f_path in valid_files:
+                    console.print(f"Adding '{os.path.basename(f_path)}' to session Local KB...")
+                    session_kb.add_document(f_path) # add_document handles parsing and indexing
+                
+                # Override the global config for KB directory for the duration of this research
+                session_kb_dir_override = temp_session_kb_path
+                config.set("local_kb", "kb_dir", session_kb_dir_override)
+                config.set("local_kb", "enabled", True) # Ensure KB is enabled if local files are provided
+                console.print(f"[green]Session Local KB created and configured with {len(valid_files)} files.[/green]")
+            except Exception as e:
+                console.print(f"[red]Error initializing or populating session Local KB: {sanitize_error(e)}[/red]")
+                console.print("[yellow]Proceeding without session-specific local files.[/yellow]")
+                if temp_session_kb_path and os.path.exists(temp_session_kb_path):
+                    import shutil
+                    shutil.rmtree(temp_session_kb_path) # Clean up partially created temp KB
+                temp_session_kb_path = None # Reset path to prevent cleanup later if it failed
+                # Restore original config if it was changed before error
+                if session_kb_dir_override: config.set("local_kb", "kb_dir", original_kb_dir_config)
+
+
     console.print(Panel(
         f"[bold blue]Query:[/] {query}\n"
         f"[bold blue]Depth:[/] {depth}\n"
@@ -407,42 +471,32 @@ def research(
         console.print("\n[yellow]Query clarification cancelled. Using original query.[/]")
         refined_query = query
 
-    if strategy == "langgraph":
-        graph = ResearchGraph(llm=llm, searcher=searcher, scraper=scraper)
+    research_result = None
+    try:
+        if strategy == "langgraph":
+            graph = ResearchGraph(llm=llm, searcher=searcher, scraper=scraper) # ResearchGraph will use the (potentially overridden) config for LocalKB
 
-        with Live(console=console, auto_refresh=True, screen=False, transient=False) as live:
-            console.print("[bold green]Starting research...[/]")
-            console.print("[bold blue]This will show detailed information about the search process and pages being analyzed.[/]")
-            console.print("[dim]The research process may take some time depending on depth and breadth settings.[/]")
-            console.print("[dim]You'll see search queries, selected URLs, and content analysis in real-time.[/]")
-            
-            # Track the last displayed state hash to avoid duplicate updates
-            last_state_hash = None
-            
-            def debounced_update_display(state):
-                nonlocal last_state_hash
-
-                # Only consider elements that should trigger a UI refresh
-                status = state.get("status", "")
-                current_depth = state.get("current_depth", 0)
-                sources_count = len(state.get("sources", []))
-                subqueries_count = len(state.get("subqueries", []))
-
-                current_hash = f"{status}_{current_depth}_{sources_count}_{subqueries_count}"
+            with Live(console=console, auto_refresh=True, screen=False, transient=False) as live:
+                console.print("[bold green]Starting research...[/]")
+                # ... (rest of the Live display setup remains the same)
+                last_state_hash = None
+                def debounced_update_display(state):
+                    nonlocal last_state_hash
+                    status = state.get("status", "")
+                    current_depth = state.get("current_depth", 0)
+                    sources_count = len(state.get("sources", []))
+                    subqueries_count = len(state.get("subqueries", []))
+                    current_hash = f"{status}_{current_depth}_{sources_count}_{subqueries_count}"
+                    if current_hash != last_state_hash:
+                        last_state_hash = current_hash
+                        if verbose:
+                            dashboard = create_research_dashboard(state)
+                            live.update(dashboard)
+                        else:
+                            tree = display_research_progress(state)
+                            live.update(tree)
                 
-                # Only update if there's a meaningful change to display
-                if current_hash != last_state_hash:
-                    last_state_hash = current_hash
-                    
-                    if verbose:
-                        dashboard = create_research_dashboard(state)
-                        live.update(dashboard)
-                    else:
-                        tree = display_research_progress(state)
-                        live.update(tree)
-            
-            try:
-                result = graph.research_sync(
+                research_result = graph.research_sync(
                     refined_query,
                     depth=depth,
                     breadth=breadth,
@@ -450,55 +504,54 @@ def research(
                     include_objective=include_objective,
                     chart_theme=chart_theme,
                     chart_colors=chart_colors,
-                    report_template=report_type, # Pass report_type as report_template
-                    detail_level=report_detail # Pass report_detail as detail_level
+                    report_template=report_type,
+                    detail_level=report_detail
                 )
-            except KeyboardInterrupt:
-                console.print("\n[yellow]Research interrupted by user.[/]")
-                sys.exit(0)
-            except Exception as e:
-                # Use the universal sanitizer for the error message
-                error_msg = sanitize_markup(str(e))
-                console.print(f"\n[red]Error during research: {error_msg}[/]")
-                sys.exit(1)
-    else:
-        # Use agent-based research
-        from .agents.agent import ResearchAgent
-        agent = ResearchAgent(llm=llm, searcher=searcher, scraper=scraper)
-        
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TimeElapsedColumn(),
-            console=console
-        ) as progress:
-            task = progress.add_task("[green]Researching...", total=depth)
-            
-            try:
-                result = agent.research_sync(
-                    refined_query,
-                    depth=depth,
-                    engines=config.get("search", "engines")
+        else: # agent-based strategy (assuming it also uses the global config for any LocalKB interaction)
+            from .agents.agent import ResearchAgent
+            agent = ResearchAgent(llm=llm, searcher=searcher, scraper=scraper)
+            with Progress(
+                SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+                BarColumn(), TimeElapsedColumn(), console=console
+            ) as progress:
+                task = progress.add_task("[green]Researching...", total=depth)
+                research_result = agent.research_sync(
+                    refined_query, depth=depth, engines=config.get("search", "engines")
                 )
-                
                 progress.update(task, completed=depth)
-                
-            except KeyboardInterrupt:
-                console.print("\n[yellow]Research interrupted by user.[/]")
-                sys.exit(0)
+        
+        # Display result
+        console.print("\n[bold green]Research complete![/]")
+        if research_result and output:
+            research_result.save_to_file(output, include_chain_of_thought, include_objective)
+            console.print(f"[green]Report saved to {output}[/]")
+        elif research_result:
+            console.print(Markdown(research_result.to_markdown(include_chain_of_thought, include_objective)))
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Research interrupted by user.[/]")
+        sys.exit(0)
+    except Exception as e:
+        error_msg = sanitize_markup(str(e))
+        console.print(f"\n[red]Error during research: {error_msg}[/]")
+        sys.exit(1)
+    finally:
+        # Restore original KB directory config and clean up session KB if created
+        if session_kb_dir_override:
+            config.set("local_kb", "kb_dir", original_kb_dir_config)
+            # Potentially restore original "enabled" state for local_kb if it was changed
+            # For now, just restoring dir. If local_files were provided, we forced enabled=True.
+            # A more robust restoration would store the original enabled state too.
+            logger.info(f"Restored Local KB directory configuration to: {original_kb_dir_config}")
+        
+        if temp_session_kb_path and os.path.exists(temp_session_kb_path):
+            try:
+                import shutil
+                shutil.rmtree(temp_session_kb_path)
+                console.print(f"[dim]Cleaned up temporary session Local KB at: {temp_session_kb_path}[/dim]")
             except Exception as e:
-                console.print(f"\n[red]Error during research: {sanitize_error(e)}[/]")
-                sys.exit(1)
-    
-    # Display result
-    console.print("\n[bold green]Research complete![/]")
-    
-    if output:
-        result.save_to_file(output, include_chain_of_thought, include_objective)
-        console.print(f"[green]Report saved to {output}[/]")
-    else:
-        console.print(Markdown(result.to_markdown(include_chain_of_thought, include_objective)))
+                console.print(f"[red]Warning: Failed to clean up temporary session Local KB: {sanitize_error(e)}[/red]")
+
 
 @cli.command()
 @click.argument("query")
@@ -672,6 +725,130 @@ def scrape(url: str, dynamic: bool):
         console.print(layout)
     else:
         console.print(f"[red]Failed to scrape {url}: {result.error}[/]")
+
+# --- Local Knowledge Base Management Commands ---
+@click.group("kb", help="Manage the Local Knowledge Base.")
+def kb():
+    """Commands for managing the Local Knowledge Base."""
+    pass
+
+@kb.command("add", help="Add a document to the Local Knowledge Base.")
+@click.argument("file_path", type=click.Path(exists=True, dir_okay=False, resolve_path=True))
+@click.option("--source-type", default="local_file", help="Type of the source, e.g., 'local_file', 'personal_notes'.")
+@click.option("--content-type", default=None, help="Content type, e.g., 'article', 'research_paper'. Guessed if not provided.")
+@click.option("--metadata-json", default=None, help="JSON string for additional metadata, e.g., '{\"author\": \"name\"}'.")
+def kb_add_document(file_path: str, source_type: str, content_type: Optional[str], metadata_json: Optional[str]):
+    """Adds a document to the Local Knowledge Base."""
+    kb_manager = get_kb_manager()
+    metadata: Optional[Dict[str, Any]] = None
+    if metadata_json:
+        try:
+            metadata = json.loads(metadata_json)
+        except json.JSONDecodeError as e:
+            console.print(f"[red]Error: Invalid JSON provided for metadata: {sanitize_error(e)}[/]")
+            return
+
+    console.print(f"Attempting to add document: {file_path}")
+    source_info = kb_manager.add_document(
+        file_path=file_path, # file_path is already absolute due to resolve_path=True
+        source_type=source_type,
+        content_type=content_type,
+        metadata=metadata
+    )
+
+    if source_info:
+        console.print(Panel(f"[green]Document '{source_info.title}' added successfully to the Local Knowledge Base.[/green]",
+                            title="Success", border_style="green"))
+        if not source_info.extracted_content:
+             console.print(f"[yellow]Warning: No text content was extracted from '{source_info.title}'. "
+                           f"The document was added, but it might not be searchable if it's an empty or non-text file.[/yellow]")
+    else:
+        console.print(Panel(f"[red]Failed to add document: {file_path}[/red]", title="Error", border_style="red"))
+
+@kb.command("remove", help="Remove a document from the Local Knowledge Base.")
+@click.argument("file_path", type=click.Path(resolve_path=True)) # exists=True not required for removal
+def kb_remove_document(file_path: str):
+    """Removes a document from the Local Knowledge Base."""
+    kb_manager = get_kb_manager()
+    abs_file_path = os.path.abspath(file_path) # Ensure it's absolute for consistency with KB storage
+
+    if not kb_manager.get_document(abs_file_path): # Check if doc exists before trying to remove
+        console.print(f"[yellow]Document not found in Local Knowledge Base: {abs_file_path}[/yellow]")
+        return
+
+    console.print(f"Attempting to remove document: {abs_file_path}")
+    if kb_manager.remove_document(abs_file_path):
+        console.print(Panel(f"[green]Document '{abs_file_path}' removed successfully from the Local Knowledge Base.[/green]",
+                            title="Success", border_style="green"))
+    else:
+        # This case might be redundant if get_document check is robust, but good for safety.
+        console.print(Panel(f"[red]Failed to remove document: {abs_file_path}. It might not exist or an error occurred.[/red]", 
+                            title="Error", border_style="red"))
+
+
+@kb.command("list", help="List all documents in the Local Knowledge Base.")
+def kb_list_documents():
+    """Lists all documents in the Local Knowledge Base."""
+    kb_manager = get_kb_manager()
+    documents = kb_manager.list_documents()
+
+    if not documents:
+        console.print("[yellow]No documents found in the Local Knowledge Base.[/yellow]")
+        return
+
+    console.print(Panel(f"Found {len(documents)} documents in the Local Knowledge Base:", style="bold blue"))
+    
+    table = Table(title="Local KB Documents")
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Title", style="green", min_width=20, overflow="fold")
+    table.add_column("Path", style="blue", min_width=30, overflow="fold")
+    table.add_column("Type", style="cyan", min_width=15, overflow="fold")
+    table.add_column("Indexed Chunks", style="magenta", width=10) # Placeholder
+
+    for idx, doc_info in enumerate(documents, 1):
+        # Try to get chunk count if retriever and index metadata exist
+        chunk_count_display = "N/A"
+        if kb_manager.retriever and kb_manager.retriever.document_chunks and doc_info.file_path:
+            # This is a simplified way; a more robust way would be to store chunk count per doc in SourceInfo or query retriever
+            doc_abs_path = os.path.abspath(doc_info.file_path)
+            count = sum(1 for chunk in kb_manager.retriever.document_chunks if chunk.get("source_file_path") == doc_abs_path)
+            chunk_count_display = str(count) if count > 0 else "0"
+            if kb_manager.retriever.index is None or kb_manager.retriever.index.ntotal == 0:
+                 chunk_count_display = "No Index"
+
+
+        table.add_row(
+            str(idx),
+            doc_info.title or "N/A",
+            doc_info.file_path or "N/A", # Should always have file_path for local KB
+            doc_info.content_type or "N/A",
+            chunk_count_display
+        )
+    console.print(table)
+
+@kb.command("reindex", help="Re-index all documents in the Local Knowledge Base.")
+def kb_reindex_documents():
+    """Rebuilds the search index for all documents in the Local Knowledge Base."""
+    kb_manager = get_kb_manager()
+    console.print("Starting re-indexing process...")
+    
+    if kb_manager.retriever is None or kb_manager.retriever.embedding_model is None:
+        console.print("[red]Retriever or embedding model not available. Cannot re-index.[/red]")
+        console.print("[yellow]Please ensure dependencies like 'sentence-transformers' and 'faiss-cpu' are installed, and the embedding model path is correct.[/yellow]")
+        return
+
+    docs = kb_manager.list_documents()
+    if docs:
+        try:
+            kb_manager.retriever.build_index_from_documents(docs, reindex=True)
+            console.print(Panel("[green]Successfully re-indexed all documents.[/green]", 
+                                title="Success", border_style="green"))
+        except Exception as e:
+            console.print(f"[red]An error occurred during re-indexing: {sanitize_error(e)}[/red]")
+    else:
+        console.print("[yellow]No documents in the knowledge base to re-index.[/yellow]")
+
+cli.add_command(kb)
 
 if __name__ == "__main__":
     cli()

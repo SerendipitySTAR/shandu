@@ -14,10 +14,12 @@ from .citation_registry import CitationRegistry
 @dataclass
 class SourceInfo:
     """Detailed information about a source."""
-    url: str
+    url: Optional[str] = None
     title: str = ""
     snippet: str = ""
     source_type: str = ""  # e.g., "web", "academic", "news"
+    is_local: bool = False
+    file_path: Optional[str] = None
     content_type: str = ""  # e.g., "article", "blog", "paper"
     access_time: float = 0.0
     domain: str = ""
@@ -28,9 +30,14 @@ class SourceInfo:
     
     def __post_init__(self):
         """Initialize additional fields after creation."""
-        if not self.domain and self.url:
-            parsed_url = urlparse(self.url)
-            self.domain = parsed_url.netloc
+        if not self.domain:
+            if self.url:
+                parsed_url = urlparse(self.url)
+                self.domain = parsed_url.netloc
+            elif self.is_local and self.file_path:
+                # For local files, we might use the file extension or parent directory as a pseudo-domain
+                # Or simply indicate it's a local file path
+                self.domain = "localfile" # Placeholder, can be more sophisticated
 
 @dataclass
 class Learning:
@@ -70,17 +77,20 @@ class CitationManager:
             source_info: The SourceInfo object containing source details
             
         Returns:
-            str: The URL of the source
+            str: The URL or file_path of the source
         """
-        url = source_info.url
-        if url not in self.sources:
-            self.source_to_learnings[url] = []
+        source_key = source_info.file_path if source_info.is_local else source_info.url
+        if not source_key:
+            raise ValueError("SourceInfo must have either a URL or a file_path for local files.")
+
+        if source_key not in self.sources:
+            self.source_to_learnings[source_key] = []
 
             if not source_info.access_time:
                 source_info.access_time = time.time()
         
-        self.sources[url] = source_info
-        return url
+        self.sources[source_key] = source_info
+        return source_key
     
     def add_learning(self, learning: Learning) -> str:
         """
@@ -129,13 +139,20 @@ class CitationManager:
         hash_id = learning.hash_id
         self.learnings[hash_id] = learning
 
-        for source_url in learning.sources:
-            if source_url not in self.source_to_learnings:
-                self.source_to_learnings[source_url] = []
-            self.source_to_learnings[source_url].append(hash_id)
+        for source_identifier in learning.sources: # source_identifier can be URL or file_path
+            if source_identifier not in self.source_to_learnings:
+                self.source_to_learnings[source_identifier] = []
+            self.source_to_learnings[source_identifier].append(hash_id)
 
-            if source_url not in self.sources:
-                self.add_source(SourceInfo(url=source_url))
+            if source_identifier not in self.sources:
+                # Determine if it's a URL or a local file path to create placeholder SourceInfo
+                # This might need more robust handling if we only have a path string
+                if source_identifier.startswith("http://") or source_identifier.startswith("https://"):
+                    self.add_source(SourceInfo(url=source_identifier))
+                else:
+                    # Assuming it's a file path if not a typical URL.
+                    # This part might need refinement based on how local paths are expected to be formatted.
+                    self.add_source(SourceInfo(file_path=source_identifier, is_local=True, url=None)) # url explicitly None
                 
         # Track category
         if learning.category:
@@ -288,19 +305,27 @@ class CitationManager:
             reg_id = self.citation_registry.register_citation(f"citation-{cid}")
             
             # Try to find the corresponding source
-            source_info = None
-            for source in self.sources.values():
-                # This matching logic would need to be enhanced in a real implementation
-                if str(cid) in source.url or (hasattr(source, 'citation_id') and source.citation_id == cid):
-                    source_info = source
-                    break
+            # This logic needs to be carefully managed if citation IDs are not directly linked to source keys (URL/filepath)
+            # For now, we assume some external mapping or convention links citation IDs to sources
+            source_key_to_find = f"citation-key-{cid}" # Placeholder: actual logic to find source by cid needed
+            source_info = self.sources.get(source_key_to_find) 
+            
+            # Fallback or alternative search if direct key match fails (example: iterating)
+            if not source_info:
+                 for src in self.sources.values():
+                    # Example matching logic: if cid is part of metadata or a specific field
+                    if src.metadata.get("citation_id_ref") == cid: # Assuming metadata might hold such reference
+                        source_info = src
+                        break
             
             if source_info:
                 entry = {
                     "id": cid,
-                    "url": source_info.url,
+                    "url": source_info.url if not source_info.is_local else None,
+                    "file_path": source_info.file_path if source_info.is_local else None,
+                    "is_local": source_info.is_local,
                     "title": source_info.title or "Unknown Title",
-                    "source_type": source_info.source_type or "web",
+                    "source_type": source_info.source_type or ("local_file" if source_info.is_local else "web"),
                     "accessed": time.strftime("%Y-%m-%d", time.localtime(source_info.access_time)) 
                         if source_info.access_time else "Unknown Date"
                 }
@@ -309,8 +334,10 @@ class CitationManager:
                 # If we don't have info, create a placeholder
                 bibliography.append({
                     "id": cid,
-                    "url": f"unknown-source-{cid}",
-                    "title": "Unknown Source",
+                    "url": None, # No URL for unknown
+                    "file_path": None, # No file_path for unknown
+                    "is_local": False, # Default to not local if unknown
+                    "title": f"Unknown Source [{cid}]",
                     "source_type": "unknown",
                     "accessed": "Unknown Date"
                 })
@@ -345,37 +372,51 @@ class CitationManager:
         for entry in sorted(entries, key=lambda e: e["id"]):
             entry_id = entry['id']
             title = entry.get('title', 'Unknown Title')
-            url = entry.get('url', 'No URL')
-            accessed_date = entry.get('accessed', 'Unknown Date') # Format YYYY-MM-DD or "Unknown Date"
+            is_local = entry.get('is_local', False)
+            url = entry.get('url') 
+            file_path = entry.get('file_path')
+            accessed_date = entry.get('accessed', 'Unknown Date')
 
             bib_entry = f"[{entry_id}] "
 
             if style == "apa":
-                # Format: [{id}] {Title}. ({Accessed Date}). Retrieved from {URL}
-                # Simplified APA for web content without author
                 bib_entry += f"{title}."
                 if accessed_date != "Unknown Date":
                     bib_entry += f" ({accessed_date})."
-                bib_entry += f" Retrieved from {url}"
+                if is_local:
+                    bib_entry += f" Accessed from local path: {file_path}"
+                else:
+                    bib_entry += f" Retrieved from {url or 'No URL provided'}"
                 
             elif style == "mla":
-                # Format: [{id}] "{Title}." *{Website Name}*, {Accessed Date}, {URL}.
-                website_name = urlparse(url).netloc if url != 'No URL' else "Unknown Website"
+                website_name = "Local File"
+                if not is_local and url:
+                    website_name = urlparse(url).netloc if url else "Unknown Website"
+                
                 bib_entry += f'"{title}." '
                 bib_entry += f"*{website_name}*"
                 if accessed_date != "Unknown Date":
-                    bib_entry += f", {accessed_date}" # MLA uses "Day Month Year" typically, but we have YYYY-MM-DD
-                bib_entry += f", {url}."
+                    bib_entry += f", {accessed_date}"
+                
+                if is_local:
+                    bib_entry += f", {file_path}."
+                else:
+                    bib_entry += f", {url or 'No URL provided'}."
                 
             elif style == "chicago":
-                # Format (Bibliography): [{id}] {Title}. {Website Name}. Accessed {Accessed Date}. {URL}.
-                # Simplified Chicago for web content without author
-                website_name = urlparse(url).netloc if url != 'No URL' else "Unknown Website"
-                bib_entry += f'"{title}." ' # Webpage titles are often quoted in Chicago
+                website_name = "Local File"
+                if not is_local and url:
+                    website_name = urlparse(url).netloc if url else "Unknown Website"
+
+                bib_entry += f'"{title}." '
                 bib_entry += f"{website_name}."
                 if accessed_date != "Unknown Date":
-                    bib_entry += f" Accessed {accessed_date}." # "Accessed Day Month Year." is common
-                bib_entry += f" {url}."
+                    bib_entry += f" Accessed {accessed_date}."
+                
+                if is_local:
+                    bib_entry += f" {file_path}."
+                else:
+                    bib_entry += f" {url or 'No URL provided'}."
             
             bibliography += bib_entry + "\n\n"
                 
@@ -507,13 +548,15 @@ class CitationManager:
             "access_time": source.access_time,
             "domain": source.domain,
             "reliability_score": source.reliability_score,
-            "metadata": source.metadata
+            "metadata": source.metadata,
+            "is_local": source.is_local,
+            "file_path": source.file_path
         }
     
     def _dict_to_source(self, source_dict: Dict[str, Any]) -> SourceInfo:
         """Convert a dictionary to a SourceInfo object."""
         return SourceInfo(
-            url=source_dict["url"],
+            url=source_dict.get("url"), # Can be None for local files
             title=source_dict.get("title", ""),
             snippet=source_dict.get("snippet", ""),
             source_type=source_dict.get("source_type", ""),
@@ -521,7 +564,9 @@ class CitationManager:
             access_time=source_dict.get("access_time", 0.0),
             domain=source_dict.get("domain", ""),
             reliability_score=source_dict.get("reliability_score", 0.0),
-            metadata=source_dict.get("metadata", {})
+            metadata=source_dict.get("metadata", {}),
+            is_local=source_dict.get("is_local", False),
+            file_path=source_dict.get("file_path") # Can be None
         )
     
     def _learning_to_dict(self, learning: Learning) -> Dict[str, Any]:

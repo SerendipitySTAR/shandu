@@ -1,0 +1,5 @@
+This is a sample text file for testing the document parser.
+It contains multiple lines of text.
+The quick brown fox jumps over the lazy dog.
+UTF-8 characters are also supported: éàçüö.
+End of sample.txt.

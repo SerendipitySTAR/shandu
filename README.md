@@ -107,6 +107,83 @@ flowchart TB
 - **Parallel Processing Architecture**: Implements concurrent operations for efficient multi-query execution
 - **Adaptive Search Strategy**: Dynamically adjusts search queries based on discovered information
 - **Full Citation Management**: Properly attributes all sources with formatted citations in multiple styles
+- **Local Knowledge Base**: Integrate your personal documents (PDF, DOCX, TXT) into the research process for context-aware insights.
+
+## 🧠 Local Knowledge Base
+
+Shandu can now build and leverage a local knowledge base from your own documents, allowing research to be augmented with your private information. This means search results and analysis can include insights from both the web and your curated local files.
+
+**Key Local KB Features:**
+
+*   **Persistent Knowledge Base**: Store, manage, and index your documents (PDF, DOCX, TXT) over time. Your personal library becomes a searchable asset.
+*   **Local Semantic Search**: Documents are indexed using a local sentence transformer model (`all-MiniLM-L6-v2` by default) enabling fast and relevant semantic search within your files.
+*   **Mixed Results & Analysis**: The research process seamlessly combines web findings with relevant information extracted from your local documents, providing a richer, more contextualized output.
+*   **Supported File Types**: Currently supports `.pdf`, `.docx`, and `.txt` files.
+*   **Session-Specific Context**: Optionally, include local files for a single research task without adding them to your persistent knowledge base.
+
+### Managing Your Persistent Knowledge Base
+
+Your persistent Local Knowledge Base (KB) stores documents you want Shandu to remember across research sessions. The location of this KB is defined in your Shandu configuration (typically `~/.shandu/config.json`) under the `local_kb.kb_dir` key, defaulting to `local_kb_data` in your Shandu configuration directory.
+
+You can manage this persistent KB using the following CLI commands:
+
+*   **Add a document:**
+    ```bash
+    shandu kb add <file_path> [--source_type <type>] [--content_type <type>] [--metadata_json <json_string>]
+    ```
+    -   `<file_path>`: Path to the document (PDF, DOCX, TXT).
+    -   `--source_type` (optional): Specify the source type (e.g., "personal_notes", "research_paper"). Defaults to "local_file".
+    -   `--content_type` (optional): Specify the content type (e.g., "article", "report"). Guessed if not provided.
+    -   `--metadata_json` (optional): A JSON string for additional metadata (e.g., `'{"author": "John Doe", "tags": ["important"]}'`).
+    *   Example:
+        ```bash
+        shandu kb add ./my_research_paper.pdf --content_type "academic paper" --metadata_json '{"project": "Alpha"}'
+        ```
+
+*   **Remove a document:**
+    ```bash
+    shandu kb remove <file_path>
+    ```
+    -   `<file_path>`: Path to the document to remove from the KB.
+    *   Example:
+        ```bash
+        shandu kb remove ./my_research_paper.pdf
+        ```
+
+*   **List documents:**
+    ```bash
+    shandu kb list
+    ```
+    -   Displays a table of all documents currently in your persistent KB, including their title, path, type, and number of indexed chunks.
+    *   Example output:
+        ```
+        ────────────────── Local KB Documents ───────────────────
+        | # | Title                | Path                           | Type   | Indexed Chunks |
+        |---|----------------------|--------------------------------|--------|----------------|
+        | 1 | my_research_paper.pdf| /path/to/my_research_paper.pdf | .pdf   | 42             |
+        | 2 | project_notes.docx   | /path/to/project_notes.docx    | .docx  | 15             |
+        ─────────────────────────────────────────────────────────
+        ```
+
+*   **Re-index all documents:**
+    ```bash
+    shandu kb reindex
+    ```
+    -   This command re-processes all documents currently in your persistent KB and rebuilds the search index. This can be useful if the underlying embedding model or indexing logic changes, or if you suspect the index is out of sync.
+
+### Using Local Files for a Single Research Task
+
+If you want to include local documents for a specific research session without adding them to your persistent KB, you can use the `--local-files` (or `-lf`) option with the `research` command.
+
+```bash
+shandu research "Your research query" --local-files <file1_path>,<file2_path>,...
+```
+*   `<file1_path>,<file2_path>,...`: A comma-separated list of paths to local documents.
+*   Example:
+    ```bash
+    shandu research "Benefits of renewable energy" --local-files ./solar_report.pdf,./notes/wind_energy_notes.docx
+    ```
+*   **How it works**: When you use `--local-files`, Shandu creates a temporary, isolated knowledge base for that specific research session. The provided files are parsed, indexed, and used only for that run. This temporary KB is automatically cleaned up after the research is complete and does not affect your persistent KB.
 
 ## 🏁 Quick Start
 
@@ -117,13 +194,25 @@ pip install shandu
 # Install from source
 git clone https://github.com/jolovicdev/shandu.git
 cd shandu
-pip install -e .
+pip install -e . # This installs dependencies from requirements.txt
+
+# Dependencies for Local KB:
+# If you plan to use the Local Knowledge Base, ensure you have the necessary extras.
+# While `pip install -e .` should cover it, you can also install them directly:
+# pip install pypdf2 python-docx sentence-transformers faiss-cpu
 
 # Configure API settings (supports various LLM providers)
 shandu configure
 
 # Run comprehensive research
 shandu research "Your research query" --depth 2 --breadth 4 --output report.md
+
+# Research with local files for a single session
+shandu research "Impact of AI on healthcare" -lf ./my_ai_paper.pdf,./health_regulations.docx
+
+# Manage your persistent Local Knowledge Base
+shandu kb add ./important_doc.txt
+shandu kb list
 
 # Quick AI-powered search with web scraping
 shandu aisearch "Who is the current sitting president of United States?" --detailed
@@ -135,11 +224,22 @@ shandu aisearch "Who is the current sitting president of United States?" --detai
 
 ```bash
 shandu research "Your research query" \
-    --depth 3 \                # How deep to explore (1-5, default: 2)
-    --breadth 5 \              # How many parallel queries (2-10, default: 4)
-    --output report.md \       # Save to file instead of terminal
-    --verbose                  # Show detailed progress
+    --depth 3 \                  # How deep to explore (1-5, default: 2)
+    --breadth 5 \                # How many parallel queries (2-10, default: 4)
+    --output report.md \         # Save to file instead of terminal
+    --verbose \                  # Show detailed progress
+    --local-files ./file1.pdf,./docs/file2.txt # Include local files for this session
 ```
+
+### Local Knowledge Base Commands
+
+Access KB management via `shandu kb --help`. Key commands include:
+- `shandu kb add <path_to_file>`: Adds a document.
+- `shandu kb remove <path_to_file>`: Removes a document.
+- `shandu kb list`: Lists all documents.
+- `shandu kb reindex`: Rebuilds the search index.
+
+Refer to the "Local Knowledge Base" section above for more details.
 
 ### Example Reports
 
@@ -175,7 +275,27 @@ results = researcher.research_sync(
 
 # Print or save results
 print(results.to_markdown())
+
+# Note on LocalKB with Python API:
+# The LocalKB is primarily managed via CLI and used by the research process
+# through global configuration. Direct Python API for LocalKB manipulation exists
+# (`from shandu.local_kb import LocalKB`) but is more advanced usage.
+# The research command will automatically pick up the configured persistent LocalKB
+# or a session-specific one if --local-files is used with the CLI.
 ```
+
+## ⚙️ Configuration
+
+Shandu's configuration is typically managed via `shandu configure` or by editing the JSON file at `~/.shandu/config.json`. Key settings include:
+
+*   **API Settings** (`api` section): `base_url`, `api_key`, `model`.
+*   **Search Settings** (`search` section): `engines`, `max_results`, `user_agent`.
+*   **Research Parameters** (`research` section): `default_depth`, `default_breadth`, `max_urls_per_query`.
+*   **Local Knowledge Base Settings** (`local_kb` section):
+    *   `enabled`: `true` or `false`. Whether to use the Local KB feature during research.
+    *   `kb_dir`: Path to store persistent Local KB data (default: `~/.shandu/local_kb_data`).
+    *   `max_results_per_query`: How many relevant chunks to retrieve from Local KB per query (default: 3).
+    *   `embedding_model_path`: (Currently not user-configurable via `config.json`, uses a default path for `all-MiniLM-L6-v2`). For optimal performance, ensure this model is available locally. Shandu will attempt to use it from a default location.
 
 ## 🧩 Advanced Architecture
 

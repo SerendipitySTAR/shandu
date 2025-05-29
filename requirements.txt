@@ -23,3 +23,14 @@ arxiv>=2.0.0
 
 # Utilities
 python-dotenv>=1.0.0
+
+# Document parsing
+pypdf2>=3.0.0
+python-docx>=1.0.0
+
+# Vector store and embeddings
+sentence-transformers>=2.0.0
+faiss-cpu>=1.7.0
+
+# Testing
+pytest>=7.0.0

@@ -37,6 +37,11 @@ DEFAULT_CONFIG = {
         "verbose": False,
         "show_progress": True,
         "show_chain_of_thought": True
+    },
+    "local_kb": {
+        "enabled": True,  # Whether to use the local knowledge base
+        "kb_dir": "local_kb_data",  # Directory for LocalKB data, vector store, etc.
+        "max_results_per_query": 3 # Max results to fetch from local KB per query
     }
 }
 
@@ -92,10 +97,10 @@ class Config:
     
     def get(self, section: str, key: str, default: Any = None) -> Any:
         """Get config value."""
-        try:
-            return self._config[section][key]
-        except KeyError:
-            return default
+        # Ensure section exists to prevent direct KeyError from self._config[section]
+        if section in self._config:
+            return self._config[section].get(key, default)
+        return default
     
     def set(self, section: str, key: str, value: Any):
         """Set config value."""
