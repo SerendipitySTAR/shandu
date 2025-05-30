@@ -372,6 +372,8 @@ The level of detail should be {detail_level.upper()}.
 Your report must be extensive, detailed, and grounded in the research. Include all relevant data, examples, and insights found in the research.
 Use proper citations to the sources throughout, referring only to the available sources listed above.
 
+It is CRITICAL that you strictly follow all directives within the `report_style_instructions` provided in the system prompt, including structural, tonal, and content requirements specific to the chosen report style: {report_style_instructions}
+
 IMPORTANT: Begin your report with the exact title provided: "{report_title}" - do not modify or rephrase it."""
 
     # Create the prompt using the localized system template
@@ -578,6 +580,7 @@ Return the enhanced section with the exact same heading but with expanded conten
         section_prompt_for_llm = f"""{report_style_instructions}
 {length_instruction}
 
+Ensure your enhancements strictly align with the overall `report_style_instructions` ({report_style_instructions}) for tone, depth, and focus.
 You are enhancing a specific section of a larger research report. Maintain consistency with the overall report structure and tone.
 
 Report Title: {report_title}
@@ -741,6 +744,7 @@ Return the expanded section with the exact same heading but with expanded conten
         section_prompt_for_llm = f"""{report_style_instructions}
 {length_instruction}
 
+When expanding this section, rigorously apply the `report_style_instructions` ({report_style_instructions}) to maintain consistency in style, tone, and content focus for the report type.
 You are expanding a specific section of a larger research report. Maintain consistency with the overall report structure and tone.
 
 Report Title: {report_title}

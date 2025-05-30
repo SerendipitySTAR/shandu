@@ -5,6 +5,8 @@ import asyncio
 import traceback
 import json # Added for parsing LLM response for visualizable data
 import uuid # Added for generating unique chart filenames
+import os
+import subprocess
 from typing import List, Dict, Any, Optional, Tuple
 from rich.console import Console
 from rich.markdown import Markdown
@@ -405,102 +407,6 @@ JSON output:
         f"Generated initial report with {len(citation_registry.citations)} properly tracked citations and {citation_stats.get('total_learnings', 0)} learnings"
     )
     
-    if progress_callback:
-        await _call_progress_callback(progress_callback, state)
-    return state
-
-async def global_consistency_check_node(llm, progress_callback, state: AgentState) -> AgentState:
-    """
-    Performs a global consistency check on the generated report.
-    """
-    if is_shutdown_requested():
-        state["status"] = "Shutdown requested, skipping global consistency check"
-        log_chain_of_thought(state, "Shutdown requested, skipping global consistency check")
-        return state
-
-    state["status"] = "Performing global consistency check"
-    console.print("[bold blue]Performing global consistency check on the report...[/]")
-    log_chain_of_thought(state, "Starting global consistency check.")
-
-    report_to_check = state.get('final_report') \
-                      or state.get('expanded_report') \
-                      or state.get('enhanced_report') \
-                      or state.get('initial_report', '')
-
-    if not report_to_check.strip():
-        log_chain_of_thought(state, "No report content found to check for consistency.")
-        state['consistency_suggestions'] = "No report content available for consistency check."
-        if progress_callback:
-            await _call_progress_callback(progress_callback, state)
-        return state
-
-    language = state.get('language', 'en')
-    report_title = state.get('report_title', "N/A")
-    original_query = state.get('query', "N/A")
-
-    # Placeholder prompt (until it's added to prompts.py and get_system_prompt is used)
-    # In a real scenario, this would be:
-    # consistency_prompt_template = get_system_prompt("global_report_consistency_check_prompt", language)
-    # if not consistency_prompt_template: # Fallback if key not found
-    #     # ... English fallback ...
-    
-    # Using a placeholder English prompt directly for this subtask:
-    consistency_prompt_template = """You are a meticulous editor reviewing a research report for global consistency and coherence.
-Report Title: {report_title}
-Main Research Query: {original_query}
-
-Full Report Content to Review:
----
-{full_report_content}
----
-
-Please review the entire report and provide feedback on the following aspects:
-1.  **Overall Coherence:** Does the report flow logically from one section to the next? Are there smooth transitions between topics and arguments?
-2.  **Argument Consistency:** Are arguments, claims, and data points presented consistently throughout the report? Are there any contradictions or discrepancies?
-3.  **Thematic Integrity:** Does the report stay focused on the main research query: "{original_query}"? Is the central theme well-developed and maintained across all sections?
-4.  **Tone and Style:** Is the tone and writing style consistent across all sections, aligning with the expected report type? (e.g., formal, objective, analytical).
-5.  **Completeness:** Does the report adequately address the main research query? Are there any obvious gaps in information or analysis that leave key aspects of the query unanswered?
-6.  **Redundancy:** Are there any parts of the report that are overly repetitive or redundant?
-
-Provide your feedback as a concise list of specific, actionable suggestions for improvement. If no major issues are found, please state that the report appears largely consistent and coherent.
-Focus on high-level global issues rather than minor grammatical errors, unless they significantly impact clarity or meaning.
-Your suggestions should help improve the overall quality and readability of the report.
-"""
-
-    # Truncate full_report_content if it's too long for the prompt context window
-    # This is a simple truncation, more sophisticated summarization might be needed for very long reports.
-    max_report_chars_for_prompt = 15000 # Adjust as needed based on LLM context window
-    truncated_report_content = report_to_check
-    if len(report_to_check) > max_report_chars_for_prompt:
-        truncated_report_content = report_to_check[:max_report_chars_for_prompt] + \
-                                   "\n\n[Content truncated for brevity in this review prompt]"
-        log_chain_of_thought(state, f"Report content truncated to {max_report_chars_for_prompt} chars for consistency check prompt.")
-
-
-    formatted_prompt = consistency_prompt_template.format(
-        report_title=report_title,
-        original_query=original_query,
-        full_report_content=truncated_report_content
-    )
-
-    try:
-        console.print("[dim]Calling LLM for consistency check...[/dim]")
-        # Use a model configuration suitable for review/analysis tasks
-        review_llm = llm.with_config({"temperature": 0.1, "max_tokens": 1500})
-        response = await review_llm.ainvoke(formatted_prompt)
-        suggestions = response.content.strip()
-        
-        state['consistency_suggestions'] = suggestions
-        log_chain_of_thought(state, f"Consistency check completed. Suggestions: {suggestions[:300]}...")
-        console.print(f"[green]Consistency check suggestions received:[/]\n[dim]{suggestions[:500]}...[/dim]")
-
-    except Exception as e:
-        error_message = f"Error during global consistency check: {str(e)}"
-        console.print(f"[red]{error_message}[/red]")
-        log_chain_of_thought(state, error_message)
-        state['consistency_suggestions'] = f"Failed to perform consistency check. Error: {str(e)}"
-
-    state["status"] = "Global consistency check complete"
     if progress_callback:
         await _call_progress_callback(progress_callback, state)
     return state
@@ -1000,11 +906,13 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
     # Simulate chart execution and embed into final_report
     executed_charts_info_list = []
     chart_output_dir = "charts" # Relative directory for charts
+    if not os.path.exists(chart_output_dir):
+        os.makedirs(chart_output_dir)
 
     if "citation_manager" in state and state["citation_manager"]:
         citation_manager = state["citation_manager"]
         if hasattr(citation_manager, 'sources') and isinstance(citation_manager.sources, dict):
-            console.print("[bold blue]Simulating chart execution and preparing for report embedding...[/]")
+            console.print("[bold blue]Executing Matplotlib scripts and preparing for report embedding...[/]")
             for source_url, source_info in citation_manager.sources.items():
                 if hasattr(source_info, 'visualizable_data') and isinstance(source_info.visualizable_data, list):
                     for data_item_idx, data_item in enumerate(source_info.visualizable_data):
@@ -1014,32 +922,60 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
                             
                             chart_code = data_item['matplotlib_code']
                             original_chart_filename = data_item['chart_filename']
-                            chart_title = data_item.get('title_suggestion', f"Chart {len(executed_charts_info_list) + 1}")
+                            chart_title = data_item.get('title_suggestion', f"Chart_{original_chart_filename}")
                             
-                            # Simulate execution and define path for Markdown
-                            md_chart_path = f"{chart_output_dir}/{original_chart_filename}"
+                            image_path = os.path.join(chart_output_dir, original_chart_filename)
                             
-                            console.print(f"[cyan]SIMULATING CHART EXECUTION: Chart code for '{original_chart_filename}' (Source: {source_url}, Item: {data_item_idx}) would be executed.[/cyan]")
-                            console.print(f"[cyan]Image would be saved to '{md_chart_path}'.[/cyan]")
-                            # In a real scenario, you would execute chart_code here and save the file.
-                            # For example:
-                            # try:
-                            #   exec(chart_code, globals()) # Be very careful with exec in real systems
-                            #   console.print(f"[green]Successfully executed and saved {original_chart_filename}[/green]")
-                            # except Exception as e:
-                            #   console.print(f"[red]Error executing chart code for {original_chart_filename}: {e}[/red]")
+                            # Modify plt.savefig() to use the absolute image_path
+                            # Ensure image_path is properly escaped for use in a string literal if necessary,
+                            # though os.path.join should produce a clean path.
+                            # Python's string literals handle backslashes in paths correctly on Windows if they are raw or escaped.
+                            # Forcing forward slashes for cross-platform consistency in the generated script:
+                            safe_image_path_for_script = image_path.replace("\\", "/")
+                            chart_code = re.sub(r"plt\.savefig\s*\(\s*['\"].*?['\"]\s*\)", 
+                                                f"plt.savefig(r'{safe_image_path_for_script}')", 
+                                                chart_code)
+                            if "plt.savefig" not in chart_code: # If no savefig was present, add one.
+                                chart_code += f"\nplt.savefig(r'{safe_image_path_for_script}')"
+                            
+                            # Ensure plt.close() is in the script to free memory
+                            if "plt.close()" not in chart_code:
+                                chart_code += "\nplt.close()"
 
-                            executed_charts_info_list.append({
-                                'md_path': md_chart_path,
-                                'title': chart_title,
-                                'original_filename': original_chart_filename
-                            })
+                            script_path = os.path.join(chart_output_dir, "temp_chart_script.py")
+                            with open(script_path, "w") as f:
+                                f.write(chart_code)
+                            
+                            try:
+                                # Consider using sys.executable for robustness
+                                process = subprocess.run(["python", script_path], capture_output=True, text=True, timeout=30)
+                                if process.returncode == 0:
+                                    if os.path.exists(image_path) and os.path.getsize(image_path) > 0:
+                                        console.print(f"[green]Successfully executed chart script and saved: {image_path}[/green]")
+                                        executed_charts_info_list.append({
+                                            'md_path': image_path.replace("\\", "/"), # Use forward slashes for MD
+                                            'title': chart_title, 
+                                            'original_filename': original_chart_filename
+                                        })
+                                    else:
+                                        console.print(f"[red]Chart script {original_chart_filename} ran but output file {image_path} not found or empty.[/red]")
+                                        console.print(f"[red]STDOUT:\n{process.stdout}[/red]")
+                                        console.print(f"[red]STDERR:\n{process.stderr}[/red]")
+                                else:
+                                    console.print(f"[red]Error executing chart script {original_chart_filename} (Return Code: {process.returncode}):[/red]")
+                                    console.print(f"[red]STDOUT:\n{process.stdout}[/red]")
+                                    console.print(f"[red]STDERR:\n{process.stderr}[/red]")
+                            except subprocess.TimeoutExpired:
+                                console.print(f"[red]Timeout executing chart script {original_chart_filename}[/red]")
+                            except Exception as e:
+                                console.print(f"[red]Failed to execute chart script {original_chart_filename}: {e}[/red]")
+                                console.print(f"[dim]{traceback.format_exc()}[/dim]")
+                            finally:
+                                if os.path.exists(script_path):
+                                    os.remove(script_path) # Clean up
                         else:
-                            # Log if a visualizable item is missing necessary fields for chart generation
-                            # This helps in debugging if charts are expected but not generated
                             if isinstance(data_item, dict) and (not data_item.get('matplotlib_code') or not data_item.get('chart_filename')):
-                                console.print(f"[yellow]Skipping chart embedding for a visualizable_data item in {source_url} (idx: {data_item_idx}) due to missing 'matplotlib_code' or 'chart_filename'.[/yellow]")
-
+                                console.print(f"[yellow]Skipping chart execution for a visualizable_data item in {source_url} (idx: {data_item_idx}) due to missing 'matplotlib_code' or 'chart_filename'.[/yellow]")
 
     if executed_charts_info_list:
         charts_markdown_section = "\n\n## Visualizations\n\n"

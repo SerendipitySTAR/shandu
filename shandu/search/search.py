@@ -14,15 +14,17 @@ import logging
 from urllib.parse import quote_plus
 import aiohttp
 from bs4 import BeautifulSoup
-from fake_useragent import UserAgent
+# from fake_useragent import UserAgent # No longer directly used here
 from googlesearch import search as google_search
+
+from shandu.config import get_user_agent # Added import
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Try to get USER_AGENT from environment, otherwise use a generic one
-USER_AGENT = os.environ.get('USER_AGENT', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
+# USER_AGENT constant is no longer needed here as we use get_user_agent()
+# USER_AGENT = os.environ.get('USER_AGENT', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
 
 # Cache settings
 CACHE_ENABLED = True
@@ -70,20 +72,13 @@ class UnifiedSearcher:
             cache_ttl: Time-to-live for cached content in seconds
         """
         self.max_results = max_results
-        self.user_agent = USER_AGENT
+        self.user_agent = get_user_agent() # Use the centralized getter
         self.default_engine = "google"  # Set a default engine
         self.cache_enabled = cache_enabled
         self.cache_ttl = cache_ttl
         self.in_progress_queries: Set[str] = set()  # Track queries being processed to prevent duplicates
         self._semaphores = {}  # Dictionary to store semaphores for each event loop
         self._semaphore_lock = asyncio.Lock()  # Lock for thread-safe access to semaphores
-        
-        # Try to use fake_useragent if available
-        try:
-            ua = UserAgent()
-            self.user_agent = ua.random
-        except Exception as e:
-            logger.warning(f"Could not generate random user agent: {e}. Using default.")
     
     async def _check_cache(self, query: str, engine: str) -> Optional[List[SearchResult]]:
         """Check if search results are available in cache and not expired."""
