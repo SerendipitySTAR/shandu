@@ -5,6 +5,8 @@ import asyncio
 import traceback
 import json # Added for parsing LLM response for visualizable data
 import uuid # Added for generating unique chart filenames
+import os
+import subprocess
 from typing import List, Dict, Any, Optional, Tuple
 from rich.console import Console
 from rich.markdown import Markdown
@@ -1000,11 +1002,13 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
     # Simulate chart execution and embed into final_report
     executed_charts_info_list = []
     chart_output_dir = "charts" # Relative directory for charts
+    if not os.path.exists(chart_output_dir):
+        os.makedirs(chart_output_dir)
 
     if "citation_manager" in state and state["citation_manager"]:
         citation_manager = state["citation_manager"]
         if hasattr(citation_manager, 'sources') and isinstance(citation_manager.sources, dict):
-            console.print("[bold blue]Simulating chart execution and preparing for report embedding...[/]")
+            console.print("[bold blue]Executing Matplotlib scripts and preparing for report embedding...[/]")
             for source_url, source_info in citation_manager.sources.items():
                 if hasattr(source_info, 'visualizable_data') and isinstance(source_info.visualizable_data, list):
                     for data_item_idx, data_item in enumerate(source_info.visualizable_data):
@@ -1014,32 +1018,60 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
                             
                             chart_code = data_item['matplotlib_code']
                             original_chart_filename = data_item['chart_filename']
-                            chart_title = data_item.get('title_suggestion', f"Chart {len(executed_charts_info_list) + 1}")
+                            chart_title = data_item.get('title_suggestion', f"Chart_{original_chart_filename}")
                             
-                            # Simulate execution and define path for Markdown
-                            md_chart_path = f"{chart_output_dir}/{original_chart_filename}"
+                            image_path = os.path.join(chart_output_dir, original_chart_filename)
                             
-                            console.print(f"[cyan]SIMULATING CHART EXECUTION: Chart code for '{original_chart_filename}' (Source: {source_url}, Item: {data_item_idx}) would be executed.[/cyan]")
-                            console.print(f"[cyan]Image would be saved to '{md_chart_path}'.[/cyan]")
-                            # In a real scenario, you would execute chart_code here and save the file.
-                            # For example:
-                            # try:
-                            #   exec(chart_code, globals()) # Be very careful with exec in real systems
-                            #   console.print(f"[green]Successfully executed and saved {original_chart_filename}[/green]")
-                            # except Exception as e:
-                            #   console.print(f"[red]Error executing chart code for {original_chart_filename}: {e}[/red]")
+                            # Modify plt.savefig() to use the absolute image_path
+                            # Ensure image_path is properly escaped for use in a string literal if necessary,
+                            # though os.path.join should produce a clean path.
+                            # Python's string literals handle backslashes in paths correctly on Windows if they are raw or escaped.
+                            # Forcing forward slashes for cross-platform consistency in the generated script:
+                            safe_image_path_for_script = image_path.replace("\\", "/")
+                            chart_code = re.sub(r"plt\.savefig\s*\(\s*['\"].*?['\"]\s*\)", 
+                                                f"plt.savefig(r'{safe_image_path_for_script}')", 
+                                                chart_code)
+                            if "plt.savefig" not in chart_code: # If no savefig was present, add one.
+                                chart_code += f"\nplt.savefig(r'{safe_image_path_for_script}')"
+                            
+                            # Ensure plt.close() is in the script to free memory
+                            if "plt.close()" not in chart_code:
+                                chart_code += "\nplt.close()"
 
-                            executed_charts_info_list.append({
-                                'md_path': md_chart_path,
-                                'title': chart_title,
-                                'original_filename': original_chart_filename
-                            })
+                            script_path = os.path.join(chart_output_dir, "temp_chart_script.py")
+                            with open(script_path, "w") as f:
+                                f.write(chart_code)
+                            
+                            try:
+                                # Consider using sys.executable for robustness
+                                process = subprocess.run(["python", script_path], capture_output=True, text=True, timeout=30)
+                                if process.returncode == 0:
+                                    if os.path.exists(image_path) and os.path.getsize(image_path) > 0:
+                                        console.print(f"[green]Successfully executed chart script and saved: {image_path}[/green]")
+                                        executed_charts_info_list.append({
+                                            'md_path': image_path.replace("\\", "/"), # Use forward slashes for MD
+                                            'title': chart_title, 
+                                            'original_filename': original_chart_filename
+                                        })
+                                    else:
+                                        console.print(f"[red]Chart script {original_chart_filename} ran but output file {image_path} not found or empty.[/red]")
+                                        console.print(f"[red]STDOUT:\n{process.stdout}[/red]")
+                                        console.print(f"[red]STDERR:\n{process.stderr}[/red]")
+                                else:
+                                    console.print(f"[red]Error executing chart script {original_chart_filename} (Return Code: {process.returncode}):[/red]")
+                                    console.print(f"[red]STDOUT:\n{process.stdout}[/red]")
+                                    console.print(f"[red]STDERR:\n{process.stderr}[/red]")
+                            except subprocess.TimeoutExpired:
+                                console.print(f"[red]Timeout executing chart script {original_chart_filename}[/red]")
+                            except Exception as e:
+                                console.print(f"[red]Failed to execute chart script {original_chart_filename}: {e}[/red]")
+                                console.print(f"[dim]{traceback.format_exc()}[/dim]")
+                            finally:
+                                if os.path.exists(script_path):
+                                    os.remove(script_path) # Clean up
                         else:
-                            # Log if a visualizable item is missing necessary fields for chart generation
-                            # This helps in debugging if charts are expected but not generated
                             if isinstance(data_item, dict) and (not data_item.get('matplotlib_code') or not data_item.get('chart_filename')):
-                                console.print(f"[yellow]Skipping chart embedding for a visualizable_data item in {source_url} (idx: {data_item_idx}) due to missing 'matplotlib_code' or 'chart_filename'.[/yellow]")
-
+                                console.print(f"[yellow]Skipping chart execution for a visualizable_data item in {source_url} (idx: {data_item_idx}) due to missing 'matplotlib_code' or 'chart_filename'.[/yellow]")
 
     if executed_charts_info_list:
         charts_markdown_section = "\n\n## Visualizations\n\n"
