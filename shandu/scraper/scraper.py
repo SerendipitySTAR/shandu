@@ -13,7 +13,7 @@ import logging
 from urllib.parse import urlparse
 import aiohttp
 from bs4 import BeautifulSoup
-from fake_useragent import UserAgent
+# from fake_useragent import UserAgent # No longer directly used here, get_user_agent handles it
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import WebBaseLoader
 from pydantic import BaseModel, Field
@@ -23,8 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Try to get USER_AGENT from environment, otherwise use a generic one
-USER_AGENT = os.environ.get('USER_AGENT', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
+from shandu.config import get_user_agent # Added import
 
 # Cache settings
 CACHE_ENABLED = True
@@ -129,19 +128,17 @@ class WebScraper:
         self.proxy = proxy
         self.timeout = timeout
         self.max_concurrent = max(1, min(max_concurrent, 10))  # Clamp between 1 and 10
-        self.user_agent = USER_AGENT
+        # If a user_agent is explicitly passed to constructor, use it, otherwise use the global getter.
+        # The constructor parameter for user_agent is not explicitly requested in this subtask,
+        # but it's good practice. For now, let's assume the constructor doesn't take one,
+        # or if it did, it would follow this logic:
+        # self.user_agent = user_agent_param or get_user_agent()
+        self.user_agent = get_user_agent() # Use the centralized getter
         self.cache_enabled = cache_enabled
         self.cache_ttl = cache_ttl
         self.in_progress_urls: Set[str] = set()  # Track URLs being scraped to prevent duplicates
         self._semaphores = {}  # Dictionary to store semaphores for each event loop
         self._semaphore_lock = asyncio.Lock()  # Lock for thread-safe access to semaphores
-        
-        # Try to use fake_useragent if available
-        try:
-            ua = UserAgent()
-            self.user_agent = ua.random
-        except Exception as e:
-            logger.warning(f"Could not generate random user agent: {e}. Using default.")
     
     async def _check_cache(self, url: str) -> Optional[ScrapedContent]:
         """Check if content is available in cache and not expired."""

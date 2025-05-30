@@ -88,12 +88,20 @@ async def is_relevant_url(llm: ChatOpenAI, url: str, title: str, snippet: str, q
     safe_query = query.replace("{", "{{").replace("}", "}}")
     
     # Use structured output for relevance check
-    structured_llm = llm.with_structured_output(UrlRelevanceResult)
+    structured_llm = llm.with_structured_output(UrlRelevanceResult, method="function_calling")
     system_prompt = (
         "You are evaluating search results for relevance to a specific query.\n\n"
         "DETERMINE if the search result is RELEVANT or NOT RELEVANT to answering the query.\n"
         "Consider the title, URL, and snippet to make your determination.\n\n"
-        "Provide a structured response with your decision and reasoning.\n"
+        "Provide a structured response with your decision and reasoning.\n\n"
+        "IMPORTANT: Your output MUST be a valid JSON object strictly conforming to the following Pydantic model:\n"
+        "class UrlRelevanceResult(BaseModel):\n"
+        "    is_relevant: bool = Field(description=\"Whether the URL is relevant to the query\")\n"
+        "    reason: str = Field(description=\"Reason for the relevance decision\")\n\n"
+        "Example valid JSON output:\n"
+        "{\"is_relevant\": true, \"reason\": \"The title and snippet directly address the query.\"}\n"
+        "OR\n"
+        "{\"is_relevant\": false, \"reason\": \"The content is about a different topic.\"}"
     )
     user_content = (
         f"Query: {safe_query}\n\n"
@@ -115,14 +123,14 @@ async def is_relevant_url(llm: ChatOpenAI, url: str, title: str, snippet: str, q
         from ...utils.logger import log_error
 
         # Attempt to get raw response from the original prompt for logging purposes (diagnostic)
-        raw_content_for_logging = "Could not retrieve raw content for logging diagnostic"
+        diagnostic_raw_content = "Could not retrieve raw content for logging diagnostic"
         try:
             # 'prompt' and 'mapping' are from the outer scope relative to the original try block
             # 'llm' is the base LLM passed to is_relevant_url
             temp_chain_for_logging = prompt | llm | StrOutputParser()
-            raw_content_for_logging = await temp_chain_for_logging.ainvoke(mapping)
+            diagnostic_raw_content = await temp_chain_for_logging.ainvoke(mapping)
         except Exception as log_e:
-            raw_content_for_logging = f"Failed to retrieve raw content for logging diagnostic: {str(log_e)}"
+            diagnostic_raw_content = f"Failed to retrieve raw content for logging diagnostic: {str(log_e)}"
 
         log_error("Error in structured relevance check (Attempt 1)", e, 
                   context={ 
@@ -132,11 +140,29 @@ async def is_relevant_url(llm: ChatOpenAI, url: str, title: str, snippet: str, q
                       "function": "is_relevant_url",
                       "original_exception_type": e.__class__.__name__,
                       "original_exception": str(e),
-                      "diagnostic_raw_content": raw_content_for_logging 
+                      "diagnostic_raw_content": diagnostic_raw_content 
                   })
         console.print(f"[dim red]Error in structured relevance check (Attempt 1) for URL {url}: {str(e)}. Attempting recovery...[/dim red]")
-        if raw_content_for_logging != "Could not retrieve raw content for logging diagnostic" and not isinstance(raw_content_for_logging, Exception):
-             console.print(f"[dim yellow]Diagnostic raw content from LLM (same prompt, new call): '{raw_content_for_logging}'[/dim yellow]")
+        
+        # Try to parse diagnostic_raw_content before proceeding to retry LLM call
+        if isinstance(diagnostic_raw_content, str) and diagnostic_raw_content.strip().startswith("{"):
+            console.print(f"[dim blue]Attempting to parse diagnostic_raw_content for {url}...[/dim blue]")
+            try:
+                parsed_diag_json = json.loads(diagnostic_raw_content)
+                if 'is_relevant' in parsed_diag_json and 'reason' in parsed_diag_json:
+                    # Validate with Pydantic model
+                    validated_result = UrlRelevanceResult(**parsed_diag_json)
+                    console.print(f"[dim green]Successfully parsed relevance from diagnostic_raw_content for {url}. Relevant: {validated_result.is_relevant}[/dim green]")
+                    return validated_result.is_relevant
+                else:
+                    console.print(f"[dim yellow]Diagnostic raw content for {url} is JSON but misses required fields.[/dim yellow]")
+            except json.JSONDecodeError:
+                console.print(f"[dim yellow]Diagnostic raw content for {url} is not valid JSON despite starting with '{{'.[/dim yellow]")
+            except Exception as p_exc: # Catch Pydantic validation error or other issues
+                console.print(f"[dim yellow]Could not validate/parse diagnostic_raw_content for {url}: {p_exc}[/dim yellow]")
+        elif diagnostic_raw_content != "Could not retrieve raw content for logging diagnostic" and not isinstance(diagnostic_raw_content, Exception):
+             console.print(f"[dim yellow]Diagnostic raw content from LLM (same prompt, new call): '{diagnostic_raw_content}'[/dim yellow]")
+
 
         # New Attempt (Second attempt with modified prompt)
         try:
@@ -149,6 +175,10 @@ async def is_relevant_url(llm: ChatOpenAI, url: str, title: str, snippet: str, q
                 "The structure is: class UrlRelevanceResult(BaseModel):\n"
                 "    is_relevant: bool\n"
                 "    reason: str\n\n"
+                "Example valid JSON output:\n"
+                "{\"is_relevant\": true, \"reason\": \"The title and snippet directly address the query.\"}\n"
+                "OR\n"
+                "{\"is_relevant\": false, \"reason\": \"The content is about a different topic.\"}\n"
                 "If you cannot determine relevance or encounter an issue, you MUST return a JSON object like: "
                 "{\"is_relevant\": false, \"reason\": \"Error: Could not determine relevance due to [your specific issue here].\"}."
             )
@@ -158,8 +188,8 @@ async def is_relevant_url(llm: ChatOpenAI, url: str, title: str, snippet: str, q
                 {"role": "user", "content": user_content} # user_content from outer scope of original try
             ])
             
-            # structured_llm and mapping are from the outer scope of the original try block
-            retry_chain = retry_prompt_template | structured_llm
+            # Use the same structured_llm instance (already configured with method="function_calling")
+            retry_chain = retry_prompt_template | structured_llm 
             result = await retry_chain.ainvoke(mapping) 
             console.print(f"[dim green]Successfully parsed relevance for {url} with retry prompt. Relevant: {result.is_relevant}[/dim green]")
             return result.is_relevant
@@ -207,7 +237,7 @@ async def process_scraped_item(llm: ChatOpenAI, item: ScrapedContent, subquery: 
     safe_title = item.title.replace("{", "{{").replace("}", "}}")
     safe_subquery = subquery.replace("{", "{{").replace("}", "}}")
     
-    structured_llm = llm.with_structured_output(ContentRating)
+    structured_llm = llm.with_structured_output(ContentRating, method="function_calling")
     system_prompt_text = ( # Renamed to avoid conflict in case 'system_prompt' is used elsewhere
         "You are analyzing web content for reliability and extracting the most relevant information.\n\n"
         "Evaluate the RELIABILITY of the content using these criteria:\n"
@@ -217,7 +247,14 @@ async def process_scraped_item(llm: ChatOpenAI, item: ScrapedContent, subquery: 
         "4. Publication date recency\n"
         "5. Presence of citations or references\n\n"
         "Rate the source as \"HIGH\", \"MEDIUM\", or \"LOW\" reliability with a brief justification.\n\n"
-        "Then, EXTRACT the most relevant and valuable content related to the query.\n"
+        "Then, EXTRACT the most relevant and valuable content related to the query.\n\n"
+        "IMPORTANT: Your output MUST be a valid JSON object strictly conforming to the following Pydantic model:\n"
+        "class ContentRating(BaseModel):\n"
+        "    rating: str = Field(description=\"Reliability rating: HIGH, MEDIUM, or LOW\")\n"
+        "    justification: str = Field(description=\"Justification for the rating\")\n"
+        "    extracted_content: str = Field(description=\"Extracted relevant content from the source\")\n\n"
+        "Example valid JSON output:\n"
+        "{\"rating\": \"HIGH\", \"justification\": \"The article is well-sourced and written by an expert.\", \"extracted_content\": \"Relevant information...\"}"
     )
     user_message_text = ( # Renamed to avoid conflict
         f"Analyze this web content:\n\n"
@@ -246,12 +283,12 @@ async def process_scraped_item(llm: ChatOpenAI, item: ScrapedContent, subquery: 
     except Exception as e:
         from ...utils.logger import log_error
 
-        raw_content_for_logging = "Could not retrieve raw content for logging diagnostic"
+        diagnostic_raw_content = "Could not retrieve raw content for logging diagnostic"
         try:
             temp_chain_for_logging = original_prompt_template | llm | StrOutputParser()
-            raw_content_for_logging = await temp_chain_for_logging.ainvoke(mapping)
+            diagnostic_raw_content = await temp_chain_for_logging.ainvoke(mapping)
         except Exception as log_e:
-            raw_content_for_logging = f"Failed to retrieve raw content for logging diagnostic: {str(log_e)}"
+            diagnostic_raw_content = f"Failed to retrieve raw content for logging diagnostic: {str(log_e)}"
 
         log_error("Error in structured content processing (Attempt 1)", e, 
                   context={
@@ -261,11 +298,32 @@ async def process_scraped_item(llm: ChatOpenAI, item: ScrapedContent, subquery: 
                       "function": "process_scraped_item",
                       "original_exception_type": e.__class__.__name__,
                       "original_exception": str(e),
-                      "diagnostic_raw_content": raw_content_for_logging
+                      "diagnostic_raw_content": diagnostic_raw_content
                   })
         console.print(f"[dim red]Error in structured content processing (Attempt 1) for URL {item.url}: {str(e)}. Attempting recovery...[/dim red]")
-        if raw_content_for_logging != "Could not retrieve raw content for logging diagnostic" and not isinstance(raw_content_for_logging, Exception):
-             console.print(f"[dim yellow]Diagnostic raw content from LLM (same prompt, new call): '{raw_content_for_logging}'[/dim yellow]")
+        
+        # Attempt to parse diagnostic_raw_content before retrying LLM call
+        if isinstance(diagnostic_raw_content, str) and diagnostic_raw_content.strip().startswith("{"):
+            console.print(f"[dim blue]Attempting to parse diagnostic_raw_content for {item.url} in process_scraped_item...[/dim blue]")
+            try:
+                parsed_diag_json = json.loads(diagnostic_raw_content)
+                if 'rating' in parsed_diag_json and 'justification' in parsed_diag_json and 'extracted_content' in parsed_diag_json:
+                    validated_result = ContentRating(**parsed_diag_json)
+                    console.print(f"[dim green]Successfully parsed ContentRating from diagnostic_raw_content for {item.url}.[/dim green]")
+                    return {
+                        "item": item,
+                        "rating": validated_result.rating,
+                        "justification": validated_result.justification,
+                        "content": validated_result.extracted_content
+                    }
+                else:
+                    console.print(f"[dim yellow]Diagnostic raw content for {item.url} (process_scraped_item) is JSON but misses required ContentRating fields.[/dim yellow]")
+            except json.JSONDecodeError:
+                console.print(f"[dim yellow]Diagnostic raw content for {item.url} (process_scraped_item) is not valid JSON.[/dim yellow]")
+            except Exception as p_exc: 
+                console.print(f"[dim yellow]Could not validate/parse diagnostic_raw_content for {item.url} (process_scraped_item): {p_exc}[/dim yellow]")
+        elif diagnostic_raw_content != "Could not retrieve raw content for logging diagnostic" and not isinstance(diagnostic_raw_content, Exception):
+             console.print(f"[dim yellow]Diagnostic raw content from LLM (same prompt, new call): '{diagnostic_raw_content}'[/dim yellow]")
 
         # New Attempt (Second attempt with modified prompt)
         try:

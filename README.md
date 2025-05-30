@@ -29,6 +29,9 @@ Shandu 2.0 introduces a major redesign of the report generation pipeline to prod
 - **Enhanced Citation Management**: More reliable citation handling ensures proper attribution throughout reports
 - **Intelligent Parallelization**: Key processes run in parallel where possible for improved performance
 - **Comprehensive Fallback Mechanisms**: If any step fails, the system gracefully degrades rather than halting
+    - **Global Consistency Check**: The `global_consistency_check_node` for report validation has been implemented and integrated into the workflow.
+    - **Full Chart Generation**: Chart generation functionality is now fully implemented, including dynamic generation of Matplotlib scripts and their execution to produce image files embedded in reports.
+    - **Enhanced Report Styling**: Report style differentiation has been enhanced for more distinct outputs based on selected style (standard, academic, business, literature_review).
 
 ## ⚙️ How Shandu Works
 
