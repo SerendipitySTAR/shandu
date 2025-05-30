@@ -6,6 +6,7 @@ from datetime import datetime
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
+from shandu.prompts import get_system_prompt # Added import
 from ..utils.citation_registry import CitationRegistry
 
 # Structured output models
@@ -308,190 +309,211 @@ async def generate_initial_report(
     current_date: str,
     detail_level: str,
     include_objective: bool,
-    citation_registry: Optional[CitationRegistry] = None
+    citation_registry: Optional[CitationRegistry] = None,
+    report_style_instructions: str = "", # Added
+    language: str = "en" # Added
 ) -> str:
     """Generate the initial report draft using structured output."""
-    # Use structured output for initial report generation
-    structured_llm = llm.with_structured_output(InitialReport, method="function_calling")
-
-    objective_instruction = ""
+    
+    system_prompt_template = get_system_prompt("report_generation", language)
+    
+    # Variables to be injected into the system prompt template
+    # Note: report_style_instructions is already localized by the caller
+    # objective_instruction needs to be determined based on include_objective
+    objective_instruction_text = ""
     if not include_objective:
-        objective_instruction = "\n\nIMPORTANT: DO NOT include an \"Objective\" section at the beginning of the report. Let your content and analysis naturally determine the structure."
+        objective_instruction_text = "\n\nIMPORTANT: DO NOT include an \"Objective\" section at the beginning of the report. Let your content and analysis naturally determine the structure."
 
+    # Prepare available sources text
     available_sources_text = ""
     if citation_registry:
         available_sources = []
         for cid in sorted(citation_registry.citations.keys()):
             citation_info = citation_registry.citations[cid]
             url = citation_info.get("url", "")
-            title = citation_info.get("title", "")
+            title = citation_info.get("title", "") # Assuming title is stored
             available_sources.append(f"[{cid}] - {title} ({url})")
-        
         if available_sources:
             available_sources_text = "\n\nAVAILABLE SOURCES FOR CITATION:\n" + "\n".join(available_sources)
-    
-    # Use a direct system prompt without template variables
-    system_prompt = f"""You are generating a comprehensive research report based on extensive research.
-    
-    REPORT REQUIREMENTS:
-    - The report should be thorough, detailed, and professionally formatted in Markdown.
-    - Include headers, subheaders, and formatting for readability.
-    - The level of detail should be {detail_level.upper()}.
-    - Base the report ENTIRELY on the provided research findings.
-    - As of {current_date}, incorporate the most up-to-date information available.
-    - Create a dynamic structure based on the content themes rather than a rigid template.{objective_instruction}
-    
-    CITATION REQUIREMENTS:
-    - ONLY use the citation IDs provided in the AVAILABLE SOURCES list
-    - Format citations as [n] where n is the exact ID of the source
-    - Place citations at the end of the relevant sentences or paragraphs
-    - Do not make up your own citation numbers
-    - Do not cite sources that aren't in the available sources list
-    - Ensure each major claim or statistic has an appropriate citation
-    """
 
+    # Populate the system prompt using .format() for clarity with potentially complex fetched templates
+    # The main template placeholders are {{current_date}}, {{report_style_instructions}}, {{objective_instruction}}
+    # The system_prompt_template fetched from get_system_prompt should already contain these.
+    # We also need to ensure detail_level is part of the system prompt if it's used there.
+    # The original f-string was:
+    # system_prompt = f"""You are generating a comprehensive research report...
+    # - The level of detail should be {detail_level.upper()}.
+    # - As of {current_date}, incorporate the most up-to-date information available.
+    # - Create a dynamic structure based on the content themes rather than a rigid template.{objective_instruction}"""
+    # The fetched template should ideally contain placeholders for these.
+    # Let's assume the fetched `report_generation` prompt template has placeholders for:
+    # {{current_date}}, {{report_style_instructions}}, {{objective_instruction}}, {{detail_level_placeholder}}
+
+    # For now, I'll manually insert detail_level into the user message or assume it's part of report_style_instructions
+    # or that the main system prompt template was designed to work without it explicitly.
+    # The current `SYSTEM_PROMPTS["report_generation"]` does not have a placeholder for detail_level.
+    # It's usually part of report_style_instructions or a general guideline.
+    
+    # The user message will carry the main content specifics
     user_message = f"""Create an extensive, in-depth research report on this topic.
 
 Title: {report_title}
-Analyzed Findings: {findings[:5000]}
+Analyzed Findings: {findings[:5000]} 
 Number of sources: {len(selected_sources)}
 Key themes identified in the research: 
-{extracted_themes}{available_sources_text}
+{extracted_themes}
+{available_sources_text} 
 
 Organize your report around these key themes that naturally emerged from the research.
 Create a dynamic, organic structure that best presents the findings, rather than forcing content into predetermined sections.
 Ensure comprehensive coverage while maintaining a logical flow between topics.
+The level of detail should be {detail_level.upper()}.
 
 Your report must be extensive, detailed, and grounded in the research. Include all relevant data, examples, and insights found in the research.
 Use proper citations to the sources throughout, referring only to the available sources listed above.
 
 IMPORTANT: Begin your report with the exact title provided: "{report_title}" - do not modify or rephrase it."""
-    
+
+    # Create the prompt using the localized system template
+    # The system prompt itself will be formatted by LangChain using these values.
     prompt = ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
+        ("system", system_prompt_template), # Localized base template
         ("user", user_message)
     ])
-
-    sources_text = "\n\nSOURCES ANALYZED IN DETAIL:\n"
-    if formatted_citations:
-        sources_text += formatted_citations
-    else:
-        for i, url in enumerate(selected_sources, 1):
-            sources_text += f"{i}. {url}\n"
     
-    # Augment findings with selected source information
-    augmented_findings = findings + sources_text
+    # Context for LangChain's .ainvoke method if system prompt has {{placeholders}}
+    prompt_context = {
+        "current_date": current_date,
+        "report_style_instructions": report_style_instructions, # Already localized
+        "objective_instruction": objective_instruction_text,
+        # Add other placeholders if the fetched system_prompt_template uses them
+    }
 
     try:
-        # Direct non-structured approach to avoid errors
-        # Direct non-structured approach to avoid errors
-        direct_prompt = f"""Create an extremely comprehensive, detailed research report that is AT LEAST 5,000 words long.
-
+        # Fallback direct_prompt also needs localization.
+        # For simplicity, we might use a generic instruction here or a simplified localized prompt.
+        # Let's assume the main path with ChatPromptTemplate works.
+        # The original direct_prompt was an f-string. If we want to localize this,
+        # it also needs to be fetched. For now, let's focus on the main path.
+        # If direct_prompt is still needed, its template should be fetched via get_system_prompt.
+        # Simplified direct_prompt for fallback:
+        direct_prompt_template_key = "direct_initial_report_generation" # Needs to be in prompts.py
+        direct_prompt_base_template = get_system_prompt(direct_prompt_template_key, language)
+        if not direct_prompt_base_template: # Fallback if key not found
+            direct_prompt_base_template = """Create an extremely comprehensive, detailed research report.
 Title: {report_title}
-Analyzed Findings: {findings[:5000]}
-Number of sources: {len(selected_sources)}
-Key themes identified in the research: 
-{extracted_themes}{available_sources_text}
+Based on findings: {findings_preview}
+Themes: {themes}
+Sources available: {sources_info}
+Detail level: {detail_level}. Current date: {current_date}.
+Follow Markdown format. Include title, intro, sections by theme, conclusion, and references with correct citations [n]."""
 
-REPORT REQUIREMENTS:
-- The report should be thorough, detailed, and professionally formatted in Markdown.
-- Include headers, subheaders, and formatting for readability.
-- The level of detail should be {detail_level.upper()}.
-- Base the report ENTIRELY on the provided research findings.
-- As of {current_date}, incorporate the most up-to-date information available.
-- Create a dynamic structure based on the content themes rather than a rigid template.
-- CRITICALLY IMPORTANT: DO NOT include the original query text at the beginning of the report. Start directly with the title.
-
-CITATION REQUIREMENTS:
-- ONLY use the citation IDs provided in the AVAILABLE SOURCES list
-- Format citations as [n] where n is the exact ID of the source
-- Place citations at the end of the relevant sentences or paragraphs
-- Do not make up your own citation numbers
-- Do not cite sources that aren't in the available sources list
-- Ensure each major claim or statistic has an appropriate citation
-
-FORMAT (IMPORTANT):
-- Always use full power of markdown (eg. tables for comparasions, links, citations, etc.)
-- Start with the title as a level 1 heading: "# {report_title}"
-- Include executive summary
-- Include an introduction
-- Include sections based on the key themes
-- Include a conclusion
-- Include references section
-"""
-        # Use direct approach with maximum token limit for very long reports
-        report_llm = llm.with_config({"max_tokens": 32768, "temperature": 0.6})
-        response = await report_llm.ainvoke(direct_prompt)
+        direct_prompt_content = direct_prompt_base_template.format(
+            report_title=report_title,
+            findings_preview=findings[:2000], # Preview to keep prompt manageable
+            themes=extracted_themes,
+            sources_info=available_sources_text,
+            detail_level=detail_level.upper(),
+            current_date=current_date,
+            report_style_instructions=report_style_instructions # Pass this too
+        )
         
+        report_llm = llm.with_config({"max_tokens": 32768, "temperature": 0.6})
+        # Invoke with the structured prompt first
+        # response = await (prompt | report_llm).ainvoke(prompt_context) # This would be the ideal structured way
+        
+        # The original code uses a direct invoke on a manually constructed "direct_prompt_content" for the main path.
+        # This "direct_prompt_content" should be constructed from a localized template.
+        # The `report_generation` system prompt is quite complex.
+        # Let's use the fetched system_prompt_template for the main call if possible,
+        # but the user message is very specific.
+        # Re-constructing the main path to use the fetched system prompt with ChatPromptTemplate:
+
+        final_system_prompt = system_prompt_template.format(
+            current_date=current_date,
+            report_style_instructions=report_style_instructions,
+            objective_instruction=objective_instruction_text,
+            # detail_level is in user_message for now
+        )
+
+        final_prompt_messages = [
+            ("system", final_system_prompt),
+            ("user", user_message)
+        ]
+        
+        response = await report_llm.ainvoke(final_prompt_messages)
         return response.content
         
     except Exception as e:
         print(f"Error in structured report generation: {str(e)}. Using simpler approach.")
-
         from ...utils.logger import log_error
         log_error("Error in structured report generation", e, 
-                 context=f"Query: {query}, Report title: {report_title}, Function: generate_initial_report")
-        # Fallback to simpler report generation without structured output
+                 context={"query": query, "report_title": report_title, "language": language, "function": "generate_initial_report"})
+        
+        # Fallback to simpler report generation
+        simple_system_template = get_system_prompt("simple_report_fallback", language) # New key needed
+        if not simple_system_template:
+            simple_system_template = "Generate a research report based on findings. Date: {current_date}."
+        
+        simple_system_message = simple_system_template.format(current_date=current_date)
+        
+        simple_user_message = f"Title: {report_title}\n\nFindings (preview): {findings[:5000]}\n{available_sources_text}"
+        
         simple_prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""Generate a comprehensive research report based on the provided findings.
-            The report should be well-structured with clear sections and proper citations.
-            Current date: {current_date}"""),
-            ("user", f"Title: {report_title}\n\nFindings: {augmented_findings[:10000]}")
+            ("system", simple_system_message),
+            ("user", simple_user_message)
         ])
         
         simple_llm = llm.with_config({"max_tokens": 16000, "temperature": 0.6})
-        simple_chain = simple_prompt | simple_llm
-        report = await simple_chain.ainvoke({})
-        
-        return report.content
+        response = await (simple_prompt | simple_llm).ainvoke({})
+        return response.content
 
 async def enhance_report(
     llm: ChatOpenAI, 
     initial_report: str, 
     current_date: str, 
-    formatted_citations: str, 
-    selected_sources: List, 
-    sources: List[Dict],
-    citation_registry: Optional[CitationRegistry] = None
+    # formatted_citations: str, # Not directly used in prompt construction here
+    # selected_sources: List,   # Not directly used
+    # sources: List[Dict],      # Not directly used
+    citation_registry: Optional[CitationRegistry] = None,
+    report_style_instructions: str = "", 
+    language: str = "en",
+    length_instruction: str = "" # Added
 ) -> str:
-    """Enhance the report with additional detail while preserving structure."""
+    """Enhance the report with additional detail while preserving structure and providing context."""
 
     if not initial_report or len(initial_report.strip()) < 500:
         return initial_report
 
     title_match = re.match(r'# ([^\n]+)', initial_report)
-    original_title = title_match.group(1) if title_match else "xxx"
+    report_title = title_match.group(1) if title_match else "Research Report" 
 
-    section_pattern = re.compile(r'(#+\s+[^\n]+)(\n\n[^#]+?)(?=\n#+\s+|\Z)', re.DOTALL)
-    sections = section_pattern.findall(initial_report)
-    
-    if not sections:
-        # If no sections found, return the initial report
+    # Store sections as list of dicts to easily access header and content
+    raw_sections = re.compile(r'(#+\s+[^\n]+)((?:\n\n[^#]+?)*)(?=\n#+\s+|\Z)', re.DOTALL).findall(initial_report)
+    sections_data = [{'header': header, 'content': content.strip()} for header, content in raw_sections if header and content.strip()]
+
+    if not sections_data:
         return initial_report
 
-    enhanced_report = f"# {original_title}\n\n"
+    # Determine report_summary_context
+    report_summary_context = "Summary not available."
+    if sections_data:
+        first_section_title = sections_data[0]['header'].lower().replace('#', '').strip()
+        if "introduction" in first_section_title or "executive summary" in first_section_title:
+            report_summary_context = sections_data[0]['content'][:500] + "..." if len(sections_data[0]['content']) > 500 else sections_data[0]['content']
+        else: # Fallback to first few paras of the report if no clear intro/summary
+            intro_text_match = re.search(r'#\s*[^\n]+\n+([^#]+)', initial_report, re.DOTALL)
+            if intro_text_match:
+                report_summary_context = intro_text_match.group(1).strip()[:500] + "..." if len(intro_text_match.group(1).strip()) > 500 else intro_text_match.group(1).strip()
+
+
+    enhanced_report_parts = [f"# {report_title}\n\n"]
     
-    for section_header, section_content in sections:
-        # Skip enhancing references section
-        if "References" in section_header:
-            enhanced_report += f"{section_header}{section_content}\n\n"
-            continue
+    base_section_prompt_template = get_system_prompt("enhance_section_detail_template", language)
+    if not base_section_prompt_template: 
+        base_section_prompt_template = """Enhance this section of a research report with additional depth and detail:
 
-        available_sources_text = ""
-        if citation_registry:
-            available_sources = []
-            for cid in sorted(citation_registry.citations.keys()):
-                citation_info = citation_registry.citations[cid]
-                url = citation_info.get("url", "")
-                title = citation_info.get("title", "")
-                available_sources.append(f"[{cid}] - {title} ({url})")
-            
-            if available_sources:
-                available_sources_text = "\n\nAVAILABLE SOURCES FOR CITATION:\n" + "\n".join(available_sources)
-
-        section_prompt = f"""Enhance this section of a research report with additional depth and detail:
-
-{section_header}{section_content}{available_sources_text}
+{section_header_content}{available_sources_text}
 
 Your task is to:
 1. Add more detailed explanations to key concepts
@@ -517,92 +539,147 @@ IMPORTANT:
 - Return ONLY the enhanced section with the original heading
 
 Return the enhanced section with the exact same heading but with expanded content.
+""" # This is the fallback English version of the template from prompts.py
+
+    for i, current_section in enumerate(sections_data):
+        section_header = current_section['header']
+        section_content = current_section['content']
+
+        if "references" in section_header.lower(): 
+            enhanced_report_parts.append(f"{section_header}\n\n{section_content}\n\n")
+            continue
+
+        preceding_section_context = "This is the first main section."
+        if i > 0:
+            prev_content = sections_data[i-1]['content']
+            preceding_section_context = (prev_content[:150] + "..." + prev_content[-150:]) if len(prev_content) > 300 else prev_content
+        
+        succeeding_section_context = "This is the last main section."
+        if i < len(sections_data) - 1:
+            next_content = sections_data[i+1]['content']
+            succeeding_section_context = (next_content[:150] + "..." + next_content[-150:]) if len(next_content) > 300 else next_content
+            
+        available_sources_text = ""
+        if citation_registry:
+            sources_list = [f"[{cid}] - {info.get('title', 'Untitled')} ({info.get('url', '')})" 
+                            for cid, info in sorted(citation_registry.citations.items())]
+            if sources_list:
+                available_sources_text = "\n\nAVAILABLE SOURCES FOR CITATION:\n" + "\n".join(sources_list)
+        
+        # Core instructions for the current section, formatted from the fetched template
+        formatted_core_instructions = base_section_prompt_template.format(
+            section_header_content=f"{section_header}\n\n{section_content}", # Note: section_header_content is one var now
+            available_sources_text=available_sources_text,
+            current_date=current_date
+            # Other placeholders specific to enhance_section_detail_template if any
+        )
+
+        # Construct the full prompt with context
+        section_prompt_for_llm = f"""{report_style_instructions}
+{length_instruction}
+
+You are enhancing a specific section of a larger research report. Maintain consistency with the overall report structure and tone.
+
+Report Title: {report_title}
+Overall Report Summary:
+{report_summary_context}
+
+Preceding Section Content (Context):
+{preceding_section_context}
+
+Succeeding Section Content (Context):
+{succeeding_section_context}
+
+---
+BEGIN SECTION TO ENHANCE (Instructions from template apply to this part):
+{formatted_core_instructions}
+---
 """
         
         try:
-            # Use a lower token limit for each section to avoid issues
             enhance_llm = llm.with_config({"max_tokens": 4096, "temperature": 0.2})
-            response = await enhance_llm.ainvoke(section_prompt)
-
+            response = await enhance_llm.ainvoke(section_prompt_for_llm)
             section_text = response.content
-            section_text = re.sub(r'\[/[^\]]*\]', '', section_text)  # Remove any malformed closing tags
+            # Basic cleanup: remove potential markup tags if LLM adds them
+            section_text = re.sub(r'\[\/?(?:PDF|Text|ImageB|ImageC|ImageI)(?:\/?|\])(?:[^\]]*\])?', '', section_text)
+            section_text = re.sub(r'\[\/[^\]]*\]', '', section_text)
+
 
             if not section_text.strip().startswith(section_header.strip()):
-                section_text = f"{section_header}\n\n{section_text}"
-                
-            enhanced_report += f"{section_text}\n\n"
-            
+                section_text = f"{section_header}\n\n{section_text.strip()}" # Ensure header and strip extra newlines
+            enhanced_report_parts.append(f"{section_text.strip()}\n\n")
         except Exception as e:
-            # If enhancement fails for a section, use the original
             print(f"Error enhancing section '{section_header.strip()}': {str(e)}")
-            enhanced_report += f"{section_header}{section_content}\n\n"
+            enhanced_report_parts.append(f"{section_header}\n\n{section_content}\n\n") # Use original on error
     
-    return enhanced_report
+    return "".join(enhanced_report_parts).strip()
 
 async def expand_key_sections(
     llm: ChatOpenAI, 
     report: str, 
-    identified_themes: str, 
+    # identified_themes: str, # Not directly used in prompt construction here
     current_date: str,
-    citation_registry: Optional[CitationRegistry] = None
+    citation_registry: Optional[CitationRegistry] = None,
+    report_style_instructions: str = "", 
+    language: str = "en",
+    length_instruction: str = "", # Added
+    expansion_requirements_text: str = "" # Added for dynamically built requirements
 ) -> str:
     """Expand key sections of the report while preserving structure and avoiding markup errors."""
-    # Make sure we have a properly formatted report to start with
     if not report or len(report.strip()) < 1000:
         return report
 
-    report = re.sub(r'\[\/?(?:PDF|Text|ImageB|ImageC|ImageI)(?:\/?|\])(?:[^\]]*\])?', '', report)
+    report_title_match = re.match(r'# ([^\n]+)', report)
+    report_title = report_title_match.group(1) if report_title_match else "Research Report"
 
-    section_pattern = re.compile(r'(## [^\n]+)(\n\n[^#]+?)(?=\n##|\Z)', re.DOTALL)
-    sections = section_pattern.findall(report)
+    # Store sections as list of dicts to easily access header and content
+    raw_sections = re.compile(r'(#+\s+[^\n]+)((?:\n\n[^#]+?)*)(?=\n#+\s+|\Z)', re.DOTALL).findall(report)
+    sections_data = [{'header': header, 'content': content.strip()} for header, content in raw_sections if header and content.strip()]
     
-    if not sections:
-        return report
+    if not sections_data: return report
     
-    # Select 2-3 most important sections to expand
-    important_sections = []
-    for section_header, section_content in sections:
-        title = section_header.replace('#', '').strip()
-        # Skip executive summary, introduction, conclusion, and references
-        if title.lower() in ["executive summary", "introduction", "conclusion", "references"]:
-            continue
-        important_sections.append((section_header, section_content))
-    
-    # Limit to 3 sections maximum
-    important_sections = important_sections[:3]
-    
-    if not important_sections:
-        return report
-    
-    # Expand each section
-    expanded_report = report
-    for section_header, section_content in important_sections:
-        title = section_header.replace('#', '').strip()
+    # Determine report_summary_context (similar to enhance_report)
+    report_summary_context = "Summary not available."
+    if sections_data:
+        first_section_title_lower = sections_data[0]['header'].lower().replace('#', '').strip()
+        if "introduction" in first_section_title_lower or "executive summary" in first_section_title_lower:
+            report_summary_context = sections_data[0]['content'][:500] + "..." if len(sections_data[0]['content']) > 500 else sections_data[0]['content']
+        else:
+            intro_text_match = re.search(r'#\s*[^\n]+\n+([^#]+)', report, re.DOTALL)
+            if intro_text_match:
+                report_summary_context = intro_text_match.group(1).strip()[:500] + "..." if len(intro_text_match.group(1).strip()) > 500 else intro_text_match.group(1).strip()
 
-        available_sources_text = ""
-        if citation_registry:
-            available_sources = []
-            for cid in sorted(citation_registry.citations.keys()):
-                citation_info = citation_registry.citations[cid]
-                url = citation_info.get("url", "")
-                title = citation_info.get("title", "")
-                available_sources.append(f"[{cid}] - {title} ({url})")
-            
-            if available_sources:
-                available_sources_text = "\n\nAVAILABLE SOURCES FOR CITATION:\n" + "\n".join(available_sources)
+    important_sections_to_process = []
+    original_indices = [] # To replace sections correctly in the original list of parts
 
-        section_prompt = f"""Expand this section of a research report with much greater depth and detail:
+    # Identify ## sections to expand, excluding common ones
+    for i, section_data_item in enumerate(sections_data):
+        header = section_data_item['header']
+        # Only consider ## level sections for expansion
+        if header.startswith("## ") and header.lower().replace('#', '').strip() not in \
+           ["executive summary", "introduction", "conclusion", "references"]:
+            important_sections_to_process.append(section_data_item)
+            original_indices.append(i)
+    
+    important_sections_to_process = important_sections_to_process[:3] # Limit to 3
+    original_indices = original_indices[:3]
 
-{section_header}{section_content}{available_sources_text}
+    if not important_sections_to_process: return report
+    
+    # Work on a list of all report parts (title, sections)
+    all_report_parts = [f"# {report_title}\n\n"] + [f"{sd['header']}\n\n{sd['content']}\n\n" for sd in sections_data]
+
+    section_prompt_template_key = "expand_section_detail_template"
+    base_section_prompt_template = get_system_prompt(section_prompt_template_key, language)
+
+    if not base_section_prompt_template: 
+        base_section_prompt_template = """Expand this section of a research report with much greater depth and detail:
+
+{section_header_content}{available_sources_text}
 
 EXPANSION REQUIREMENTS:
-1. Triple the length and detail of the section while maintaining accuracy
-2. Add specific examples, case studies, or data points to support claims
-3. Include additional context and background information
-4. Add nuance, caveats, and alternative perspectives
-5. Use proper citation format [n] throughout
-6. Maintain the existing section structure but add subsections if appropriate
-7. Ensure all information is accurate as of {current_date}
+{expansion_requirements} 
+Ensure all information is accurate as of {current_date}.
 
 CITATION REQUIREMENTS:
 - ONLY use the citation IDs provided in the AVAILABLE SOURCES list above
@@ -620,27 +697,82 @@ IMPORTANT:
 - Return ONLY the expanded section with the original heading
 
 Return the expanded section with the exact same heading but with expanded content.
-"""
+""" # Fallback English version
+
+    for idx, section_data_to_expand in enumerate(important_sections_to_process):
+        original_report_part_index = original_indices[idx] + 1 # +1 because all_report_parts[0] is the title
+
+        section_header = section_data_to_expand['header']
+        section_content = section_data_to_expand['content']
+        title = section_header.replace('#', '').strip() # For logging
+
+        preceding_section_context = "This is the first main section after the introduction/summary."
+        # Find true preceding content part index
+        if original_report_part_index > 1: # If not the first content part after title
+            prev_content_full = all_report_parts[original_report_part_index - 1]
+            # Strip header from prev_content_full
+            prev_content_text_match = re.search(r'#+\s*[^\n]+\n+([^#]+)', prev_content_full, re.DOTALL)
+            prev_content_text = prev_content_text_match.group(1).strip() if prev_content_text_match else prev_content_full.strip()
+            preceding_section_context = (prev_content_text[:150] + "..." + prev_content_text[-150:]) if len(prev_content_text) > 300 else prev_content_text
         
+        succeeding_section_context = "This is the last main section before the conclusion/references."
+        if original_report_part_index < len(all_report_parts) - 1:
+            next_content_full = all_report_parts[original_report_part_index + 1]
+            next_content_text_match = re.search(r'#+\s*[^\n]+\n+([^#]+)', next_content_full, re.DOTALL)
+            next_content_text = next_content_text_match.group(1).strip() if next_content_text_match else next_content_full.strip()
+            succeeding_section_context = (next_content_text[:150] + "..." + next_content_text[-150:]) if len(next_content_text) > 300 else next_content_text
+
+        available_sources_text = ""
+        if citation_registry:
+            sources_list = [f"[{cid}] - {info.get('title', 'Untitled')} ({info.get('url', '')})"
+                            for cid, info in sorted(citation_registry.citations.items())]
+            if sources_list:
+                available_sources_text = "\n\nAVAILABLE SOURCES FOR CITATION:\n" + "\n".join(sources_list)
+        
+        # Core instructions for the current section
+        formatted_core_instructions = base_section_prompt_template.format(
+            section_header_content=f"{section_header}\n\n{section_content}",
+            available_sources_text=available_sources_text,
+            current_date=current_date,
+            expansion_requirements=expansion_requirements_text # Dynamically built by node
+        )
+
+        # Construct the full prompt with context
+        section_prompt_for_llm = f"""{report_style_instructions}
+{length_instruction}
+
+You are expanding a specific section of a larger research report. Maintain consistency with the overall report structure and tone.
+
+Report Title: {report_title}
+Overall Report Summary:
+{report_summary_context}
+
+Preceding Section Content (Context):
+{preceding_section_context}
+
+Succeeding Section Content (Context):
+{succeeding_section_context}
+
+---
+BEGIN SECTION TO EXPAND (Instructions from template apply to this part):
+{formatted_core_instructions}
+---
+"""
         try:
-            # Use a reasonable token limit for each section
             expand_llm = llm.with_config({"max_tokens": 6144, "temperature": 0.2})
-            response = await expand_llm.ainvoke(section_prompt)
+            response = await expand_llm.ainvoke(section_prompt_for_llm)
+            expanded_content_text = response.content 
+            expanded_content_text = re.sub(r'\[\/?(?:PDF|Text|ImageB|ImageC|ImageI)(?:\/?|\])(?:[^\]]*\])?', '', expanded_content_text)
+            expanded_content_text = re.sub(r'\[\/[^\]]*\]', '', expanded_content_text)
 
-            expanded_content = response.content
-            # More thorough cleanup of any PDF/markup tags
-            expanded_content = re.sub(r'\[\/?(?:PDF|Text|ImageB|ImageC|ImageI)(?:\/?|\])(?:[^\]]*\])?', '', expanded_content)
 
-            if not expanded_content.strip().startswith(section_header.strip()):
-                expanded_content = f"{section_header}\n\n{expanded_content}"
+            if not expanded_content_text.strip().startswith(section_header.strip()):
+                expanded_content_text = f"{section_header}\n\n{expanded_content_text.strip()}"
             
-            # Replace the original section with the expanded one
-            # Use a more precise pattern to avoid partial replacements
-            pattern = re.compile(f"{re.escape(section_header)}{re.escape(section_content)}", re.DOTALL)
-            expanded_report = pattern.sub(expanded_content, expanded_report)
+            all_report_parts[original_report_part_index] = f"{expanded_content_text.strip()}\n\n" # Update the part in the list
             
         except Exception as e:
             print(f"Error expanding section '{title}': {str(e)}")
-            # Continue with other sections if one fails
+            # If error, the original part remains in all_report_parts
     
-    return expanded_report
+    return "".join(all_report_parts).strip()

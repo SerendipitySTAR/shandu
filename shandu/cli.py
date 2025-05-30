@@ -349,6 +349,13 @@ def clean(force: bool, cache_only: bool):
     type=str,
     help="Set the detail level for the report: 'brief', 'standard', 'detailed', or 'custom_WORDCOUNT' (e.g., 'custom_1500')."
 )
+@click.option(
+    "--language",
+    "-lang",
+    default="en",
+    type=click.Choice(['en', 'zh'], case_sensitive=False),
+    help="Language for the report and prompts (en, zh)."
+)
 def research(
     query: str, 
     depth: Optional[int], 
@@ -361,7 +368,8 @@ def research(
     chart_theme: str,
     chart_colors: Optional[str],
     report_type: str,
-    report_detail: str
+    report_detail: str,
+    language: str
 ):
     """Perform deep research on a topic."""
     if depth is None:
@@ -451,7 +459,8 @@ def research(
                     chart_theme=chart_theme,
                     chart_colors=chart_colors,
                     report_template=report_type, # Pass report_type as report_template
-                    detail_level=report_detail # Pass report_detail as detail_level
+                    detail_level=report_detail, # Pass report_detail as detail_level
+                    language=language # Pass language parameter
                 )
             except KeyboardInterrupt:
                 console.print("\n[yellow]Research interrupted by user.[/]")

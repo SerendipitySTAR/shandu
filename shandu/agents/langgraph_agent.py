@@ -31,7 +31,8 @@ from .nodes import (
     enhance_report_node,
     expand_key_sections_node,
     report_node,
-    evaluate_quality_node # Added import
+    evaluate_quality_node, # Added import
+    global_consistency_check_node # Added import for new node
 )
 from .graph import build_graph, create_node_wrapper
 
@@ -80,6 +81,7 @@ class ResearchGraph:
         expand_sections = create_node_wrapper(lambda state: expand_key_sections_node(self.llm, self.progress_callback, state))
         final_report = create_node_wrapper(lambda state: report_node(self.llm, self.progress_callback, state))
         eval_quality = create_node_wrapper(lambda state: evaluate_quality_node(self.llm, self.progress_callback, state)) # New wrapper
+        consistency_check = create_node_wrapper(lambda state: global_consistency_check_node(self.llm, self.progress_callback, state)) # New node wrapper
         
         # Build graph with these node functions
         return build_graph(
@@ -93,7 +95,8 @@ class ResearchGraph:
             enhance,
             expand_sections,
             final_report,
-            eval_quality # New argument
+            eval_quality, # New argument
+            consistency_check # New argument for consistency check node
         )
 
     async def research(
@@ -106,7 +109,8 @@ class ResearchGraph:
         detail_level: str = "standard",
         chart_theme: Optional[str] = "default",
         chart_colors: Optional[str] = None,
-        report_template: str = "standard"
+        report_template: str = "standard",
+        language: Optional[str] = "en" # Added language parameter
     ) -> ResearchResult:
         """Execute research process on a query."""
         self.progress_callback = progress_callback
@@ -139,7 +143,9 @@ class ResearchGraph:
             final_report="",
             chart_theme=chart_theme if chart_theme is not None else "default",
             chart_colors=chart_colors,
-            report_template=report_template
+            report_template=report_template,
+            language=language, # Initialize language in AgentState
+            consistency_suggestions=None # Initialize in AgentState
         )
         
         try:
@@ -203,11 +209,12 @@ class ResearchGraph:
         detail_level: str = "high",
         chart_theme: Optional[str] = "default",
         chart_colors: Optional[str] = None,
-        report_template: str = "standard"
+        report_template: str = "standard",
+        language: Optional[str] = "en" # Added language parameter
     ) -> ResearchResult:
         """Synchronous wrapper for research."""
         try:
-            return asyncio.run(self.research(query, depth, breadth, progress_callback, include_objective, detail_level, chart_theme, chart_colors, report_template))
+            return asyncio.run(self.research(query, depth, breadth, progress_callback, include_objective, detail_level, chart_theme, chart_colors, report_template, language))
         except KeyboardInterrupt:
             console.print("\n[yellow]Research interrupted by user.[/]")
             raise

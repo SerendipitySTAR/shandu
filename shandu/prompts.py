@@ -207,16 +207,383 @@ Guidelines:
 4. Note any contradictions or open questions.
 5. Build upon prior steps to move toward a comprehensive final report.
 
-Your synthesis must be precise, deeply reasoned, and self-consistent. Provide multiple paragraphs of thorough explanation."""
+Your synthesis must be precise, deeply reasoned, and self-consistent. Provide multiple paragraphs of thorough explanation.""",
+
+    "enhance_section_detail_template": """You are enhancing a section of a larger research report. Maintain consistency with the overall report structure and tone.
+
+Report Title: {{report_title}}
+Overall Report Summary (for context):
+{{report_summary_context}}
+
+Preceding Section Content (for context):
+{{preceding_section_context}}
+
+Succeeding Section Content (for context):
+{{succeeding_section_context}}
+
+Available sources for citation (use these IDs):
+{{available_sources_text}}
+---
+SECTION TO ENHANCE:
+{section_header_content} 
+---
+Your task is to enhance ONLY the "SECTION TO ENHANCE" provided above, based on the following requirements. Use the contextual information (report summary, preceding/succeeding sections) to ensure coherence and logical flow with the rest of the report.
+
+Enhancement tasks:
+1. Add more detailed explanations to key concepts
+2. Expand on examples and case studies
+3. Enhance the analysis and interpretation of findings
+4. Improve the flow within this section
+5. Add relevant statistics, data points, or evidence
+6. Ensure proper citation [n] format throughout
+7. Maintain scientific accuracy and up-to-date information (current as of {current_date})
+
+CITATION REQUIREMENTS:
+- ONLY use the citation IDs provided in the AVAILABLE SOURCES list above
+- Format citations as [n] where n is the exact ID of the source
+- Place citations at the end of the relevant sentences or paragraphs
+- Do not make up your own citation numbers
+- Do not cite sources that aren't in the available sources list
+
+IMPORTANT:
+- DO NOT change the section heading
+- DO NOT add information not supported by the research
+- DO NOT use academic-style citations like "Journal of Medicine (2020)"
+- DO NOT include PDF/Text/ImageB/ImageC/ImageI tags or any other markup
+- Return ONLY the enhanced section with the original heading
+
+Return the enhanced section with the exact same heading but with expanded content.""",
+
+    "expand_section_detail_template": """You are expanding a section of a larger research report. Maintain consistency with the overall report structure and tone.
+
+Report Title: {{report_title}}
+Overall Report Summary (for context):
+{{report_summary_context}}
+
+Preceding Section Content (for context):
+{{preceding_section_context}}
+
+Succeeding Section Content (for context):
+{{succeeding_section_context}}
+
+Available sources for citation (use these IDs):
+{{available_sources_text}}
+---
+SECTION TO EXPAND:
+{section_header_content}
+---
+Your task is to expand ONLY the "SECTION TO EXPAND" provided above. Use the contextual information (report summary, preceding/succeeding sections) to ensure coherence and logical flow.
+
+EXPANSION REQUIREMENTS:
+{expansion_requirements}
+Ensure all information is accurate as of {current_date}.
+
+CITATION REQUIREMENTS:
+- ONLY use the citation IDs provided in the AVAILABLE SOURCES list above
+- Format citations as [n] where n is the exact ID of the source
+- Place citations at the end of the relevant sentences or paragraphs
+- Do not make up your own citation numbers
+- Do not cite sources that aren't in the available sources list
+- Ensure each major claim or statistic has an appropriate citation
+
+IMPORTANT:
+- DO NOT change the section heading
+- DO NOT add information not supported by the research
+- DO NOT use academic-style citations like "Journal of Medicine (2020)"
+- DO NOT include PDF/Text/ImageB/ImageC/ImageI tags or any other markup
+- Return ONLY the expanded section with the original heading
+
+Return the expanded section with the exact same heading but with expanded content.""",
+
+    "direct_initial_report_generation": """Create an extremely comprehensive, detailed research report.
+Title: {report_title}
+Based on findings: {findings_preview}
+Themes: {themes}
+Sources available: {sources_info}
+Detail level: {detail_level}. Current date: {current_date}.
+Report style guidance: {report_style_instructions}
+
+Follow Markdown format. Include title, intro, sections by theme, conclusion, and references with correct citations [n].
+CRITICALLY IMPORTANT: DO NOT include the original query text at the beginning of the report. Start directly with the title.
+
+CITATION REQUIREMENTS:
+- ONLY use the citation IDs provided in the AVAILABLE SOURCES list
+- Format citations as [n] where n is the exact ID of the source
+- Place citations at the end of the relevant sentences or paragraphs
+- Do not make up your own citation numbers
+- Do not cite sources that aren't in the available sources list
+- Ensure each major claim or statistic has an appropriate citation
+
+FORMAT (IMPORTANT):
+- Always use full power of markdown (eg. tables for comparasions, links, citations, etc.)
+- Start with the title as a level 1 heading: "# {report_title}"
+- Include executive summary
+- Include an introduction
+- Include sections based on the key themes
+- Include a conclusion
+- Include references section""",
+
+    "simple_report_fallback": """Generate a research report based on findings. Date: {current_date}.""",
+
+    "global_report_consistency_check_prompt": """You are a meticulous editor reviewing a research report for global consistency and coherence.
+Report Title: {{report_title}}
+Main Research Query: {{original_query}}
+
+Full Report Content to Review:
+---
+{{full_report_content}}
+---
+
+Please review the entire report critically. Identify areas for improvement based on the following criteria:
+1.  **Overall Coherence:** Does the report flow logically from one section to the next? Are there smooth transitions between topics and arguments?
+2.  **Argument Consistency:** Are arguments, claims, and data presented consistently throughout the report? Are there any contradictions or unsubstantiated claims?
+3.  **Thematic Integrity:** Does the report stay focused on the main research query: "{{original_query}}"? Is the central theme well-developed and maintained across all sections?
+4.  **Tone and Style:** Is the tone (e.g., academic, business-like) and writing style consistent across all sections?
+5.  **Completeness and Depth:** Does the report adequately address the main research query? Are there any obvious gaps in information or analysis? Does it meet the expected depth for its purpose?
+6.  **Redundancy:** Are there any parts of the report that are unnecessarily repetitive? Can any sections be merged or condensed?
+7.  **Clarity and Precision:** Is the language clear, precise, and unambiguous?
+
+Provide your feedback as a concise list of specific, actionable suggestions for improvement. Number each suggestion.
+If you find no major issues, please state that the report is generally consistent and well-structured, but you may still offer minor suggestions if applicable.
+Focus on high-level structural and content consistency issues rather than minor grammatical errors, unless they impact clarity significantly."""
 }
 
 # Report Style Guidelines
 REPORT_STYLE_GUIDELINES: Dict[str, str] = {
-    "standard": "The report should be comprehensive, well-structured, and objective, suitable for a general audience. Balance detail with clarity. Ensure a logical flow with clear headings and concise language where appropriate.",
-    "academic": "This report must adhere to academic standards. Employ a formal tone, precise terminology, and a logical structure (e.g., Abstract, Introduction, Literature Review, Methodology, Findings, Discussion, Conclusion). Argumentation should be rigorous and claims supported by robust evidence and detailed citations. Focus on contribution to knowledge.",
-    "business": "This report is for a business audience. Prioritize clarity, conciseness, and actionable insights. Start with an Executive Summary. Focus on practical implications, ROI, market analysis, or competitive landscape as appropriate. Use clear, direct language and avoid jargon where possible. Visual data representation is highly encouraged.",
-    "literature_review": "This report is a literature review. Synthesize existing research on the topic, identifying key themes, theoretical frameworks, methodologies, and findings from published scholarly works. Critically evaluate the literature, highlight gaps, and suggest directions for future research. The structure should include an Introduction, several thematic sections discussing the literature, a Discussion of gaps and inconsistencies, and a Conclusion."
+    "standard": "This report should be comprehensive, well-structured, and objective, written in clear language suitable for a general, educated audience. It must ensure a logical flow with an introduction, a body organized by clear headings and subheadings, and a conclusion. Prioritize clarity, factual accuracy, and a neutral presentation of information. While detailed, avoid overly technical jargon unless essential and well-explained. The aim is to inform thoroughly and accessibly.",
+    "academic": "This report must strictly adhere to high academic standards, targeting an audience of peers and experts in the field. It requires a formal tone, precise domain-specific terminology, and a rigorous, logical structure, typically including: **Abstract** (concise summary of entire paper), **Introduction** (background, problem statement, research question/hypotheses, thesis statement, and overview of structure), **Literature Review** (critical synthesis of relevant existing scholarly work), **Methodology** (detailed description of research design, data collection, and analysis methods, if applicable, or the theoretical/analytical framework used), **Findings/Results** (objective presentation of results), **Discussion** (interpretation of findings, linking back to literature, addressing limitations, implications for theory and practice), and **Conclusion** (summary of main points, restatement of thesis, and contribution to knowledge), followed by a comprehensive **References** list (e.g., APA, MLA, Chicago style). Argumentation must be evidence-based, critical, and demonstrate a deep understanding of the subject matter.",
+    "business": "This report is for a business audience (e.g., executives, managers, clients) and must prioritize actionable insights, data-driven recommendations, and executive presence. It must begin with an **Executive Summary** that concisely presents the key findings, main conclusions, and core recommendations. The body should focus on addressing a specific business problem or opportunity, including relevant analysis (e.g., market analysis, financial projections, SWOT, competitive landscape) and clearly justified, specific, and measurable recommendations. Language must be clear, direct, concise, and professional, avoiding academic jargon. Professional formatting, including the effective use of headings, bullet points, charts, graphs, and tables to present data and highlight key information, is highly encouraged. The report should facilitate decision-making.",
+    "literature_review": "This report is *exclusively* a critical synthesis and evaluation of existing scholarly literature on a defined topic; it does *not* involve presenting original empirical research. The primary goal is to provide a comprehensive overview of the current state of knowledge, identifying key themes, significant debates, established theories, common methodologies, and important findings within the body of published work. It must critically assess the strengths, weaknesses, and contributions of the reviewed literature, explicitly identify gaps, inconsistencies, or unresolved controversies, and suggest directions for future research. A typical structure includes: **Introduction** (defining the topic, scope, and objectives of the review, outlining the search strategy), **Thematic Sections** (organizing and discussing the literature by key concepts, theories, or chronological developments, and synthesizing the findings), a **Critical Evaluation/Discussion** (highlighting overall patterns, methodological issues, gaps, and areas of contention in the literature), and a **Conclusion** (summarizing the main insights from the review and reiterating suggestions for future research). A comprehensive list of **References** is essential."
 }
+
+# Chinese (ZH) Report Style Guidelines
+REPORT_STYLE_GUIDELINES_ZH: Dict[str, str] = {
+    "standard": "本报告应全面，结构清晰，语言客观明确，适合具有一定教育背景的普通大众。必须在细节和易理解性之间取得平衡。确保逻辑流程顺畅，包含引言、按清晰的标题和副标题组织的报告主体以及结论。优先考虑清晰度、事实准确性和信息的中立呈现。虽然内容详尽，但除非必要且有充分解释，否则应避免使用过于专业的术语。目标是提供全面易懂的信息。",
+    "academic": "本报告必须严格遵守高标准的学术规范，面向该领域的同行及专家学者。要求采用正式语气、精确的领域专业术语，并具备严谨的逻辑结构，通常包括：**摘要**（对整篇论文的简明总结）、**引言**（背景、问题陈述、研究问题/假设、中心论点及结构概述）、**文献综述**（对相关现有学术著作的批判性综合）、**方法论**（如适用，详细描述研究设计、数据收集和分析方法，或所使用的理论/分析框架）、**研究发现/结果**（客观呈现结果）、**讨论**（解读发现、联系文献、阐述局限性、理论与实践意义）和**结论**（总结要点、重申中心论点及知识贡献），最后附有完整的**参考文献列表**（例如APA, MLA, Chicago格式）。论证必须基于证据、具有批判性，并展现对主题的深刻理解。",
+    "business": "本报告专为商业受众定制，必须优先提供可操作的见解、数据驱动的建议，并展现专业性。报告必须以**执行摘要**开篇，简明扼要地呈现关键发现、主要结论和核心建议。主体部分应侧重于解决特定的商业问题或机遇，包括相关分析（如市场分析、财务预测、SWOT分析、竞争格局分析）以及清晰、合理、具体且可衡量的建议。语言必须清晰、直接、简洁、专业，避免使用学术行话。强烈鼓励使用专业的格式，包括有效地运用标题、项目符号、图表、图形和表格来呈现数据和突出关键信息。报告应有助于决策制定。",
+    "literature_review": "本报告*完全*是对特定主题现有学术文献的批判性综合与评估；*不涉及*呈现原创的实证研究。其主要目的是对知识现状进行全面概述，识别已发表著作中的关键主题、重要争论、既有理论、常用方法论及重要发现。报告必须批判性地评估所回顾文献的优点、缺点和贡献，明确指出领域内的空白、不一致之处或未解决的争议，并为未来的研究提出方向。结构通常应包括：**引言**（界定综述的主题、范围和目标，概述文献检索策略）、**主题章节**（按核心概念、理论或时间发展脉络组织和讨论文献，并综合研究结果）、**批判性评估/讨论**（强调文献中的总体模式、方法问题、空白和争议领域）以及**结论**（总结综述的主要见解，并重申未来研究的建议）。提供详尽的**参考文献列表**至关重要。"
+}
+
+def get_report_style_guidelines(language: str) -> Dict[str, str]:
+    """
+    Returns the report style guidelines dictionary for the specified language.
+    Defaults to English if the language is not 'zh' or guidelines are not found.
+    """
+    if language.lower() == 'zh':
+        return REPORT_STYLE_GUIDELINES_ZH
+    return REPORT_STYLE_GUIDELINES
+
+# Chinese (ZH) System Prompts (Selected)
+SYSTEM_PROMPTS_ZH: Dict[str, str] = {
+    "report_generation": """您必须编写一份综合研究报告。今天的日期是：{{current_date}}。
+
+{{report_style_instructions}}
+
+强制性要求：
+1. 不要以“研究框架”、“目标”或任何元评论开头。以 # 标题 开始。
+2. 结构必须完全动态，标题能够自然反映内容。
+3. 用适当的参考文献证实事实陈述。
+4. 为每个主要主题或章节提供详细的段落。
+
+MARKDOWN 强制执行：
+- 仔细使用标题（#, ##, ###）以保持层级结构。
+- 酌情整合表格、粗体、斜体、代码块、块引用和水平分割线。
+- 保持足够的间距以提高可读性。
+
+内容量和深度：
+- 每个主要部分都应全面且详细。
+- 提供详尽的历史背景、理论基础、实际应用和未来展望。
+- 提供高度详细的信息，包括多个示例和案例研究。
+
+参考文献：
+- 包括精心挑选的参考文献以支持关键主张。
+- 以带括号的数字形式引用它们 [1], [2] 等，并在末尾提供单一的参考文献列表。
+
+严格的元数据和格式规则：
+- 切勿包含关于您的流程、研究框架或所用时间的无关陈述。
+- 最终文档应作为一份具有最高学术水准的、精炼的独立出版物。
+{{objective_instruction}}""",
+
+    "report_enhancement": """您必须增强现有研究报告，以提高其深度和清晰度。今天的日期是：{{current_date}}。
+
+{{report_style_instructions}}
+
+强制性增强指令：
+1. 删除任何提及“研究框架”、“目标”或类似章节的内容。
+2. 报告标题以 # 标题 开始，不含元评论。
+3. 使用能提供有价值支持证据的参考文献。
+4. 将每个章节转化为包含全面段落的透彻分析。
+5. 使用 markdown 格式，包括标题、粗体、斜体、代码块、块引用、表格和水平分割线，以创建高度可读、视觉结构化的文档。
+6. 省略任何关于花费时间或生成报告所用流程的提及。
+
+内容增强：
+- 全面提高深度和清晰度。
+- 提供更多示例、历史背景、理论框架和未来方向。
+- 比较多种观点，并深入探讨技术复杂性。
+- 保持叙述连贯流畅，不要引入矛盾信息。
+
+您的最终产品必须是权威性著作，展现学术水平的深度、全面性和清晰度。""",
+
+    "section_expansion": """您必须显著扩展研究报告的指定章节。严格遵守以下规定：
+
+{{report_style_instructions}}
+
+- 添加新撰写的段落，包含深入分析和背景信息。
+- 广泛运用 markdown 进行标题、表格、粗体高亮、斜体、代码块、块引用和列表的格式化。
+- 包括全面的示例、案例研究、历史轨迹、理论框架和细致入微的观点。
+
+将此章节转化为一篇权威的、可独立发表的论述，展现严谨的学术精神和透彻的推理。
+
+要扩展的章节：{{section}}""",
+
+    "enhance_section_detail_template": """您正在增强一份大型研究报告中的一个章节。请保持与报告整体结构和语气的一致性。
+
+报告标题：{{report_title}}
+整体报告摘要（供参考）：
+{{report_summary_context}}
+
+前一章节内容（供参考）：
+{{preceding_section_context}}
+
+后一章节内容（供参考）：
+{{succeeding_section_context}}
+
+可用引文来源（请使用这些ID）：
+{{available_sources_text}}
+---
+需要增强的章节：
+{section_header_content}
+---
+您的任务是仅增强上方提供的“需要增强的章节”，具体要求如下。请利用上下文信息（报告摘要、前一章节、后一章节）确保内容与报告其余部分连贯一致且逻辑通顺。
+
+增强任务：
+1. 对关键概念进行更详细的解释
+2. 扩展示例和案例研究
+3. 加强对研究结果的分析和解读
+4. 改进本章节内的流程
+5. 添加相关的统计数据、数据点或证据
+6. 全文确保使用正确的引文格式 [n]
+7. 保持科学准确性并确保信息更新至 {current_date}
+
+引文要求：
+- 仅可使用上方“可用引文来源列表”中提供的引文ID
+- 将引文格式化为 [n]，其中 n 是来源的确切ID
+- 将引文放在相关句子或段落的末尾
+- 请勿编造自己的引文编号
+- 请勿引用未在可用来源列表中的来源
+
+重要提示：
+- 请勿更改章节标题
+- 请勿添加研究不支持的信息
+- 请勿使用学术型引文（例如“医学杂志 (2020)”）
+- 请勿包含PDF/Text/ImageB/ImageC/ImageI标签或任何其他标记
+- 仅返回带有原始标题的增强后章节
+
+返回带有完全相同标题但内容已扩展的增强后章节。""",
+
+    "expand_section_detail_template": """您正在扩展一份大型研究报告中的一个章节。请保持与报告整体结构和语气的一致性。
+
+报告标题：{{report_title}}
+整体报告摘要（供参考）：
+{{report_summary_context}}
+
+前一章节内容（供参考）：
+{{preceding_section_context}}
+
+后一章节内容（供参考）：
+{{succeeding_section_context}}
+
+可用引文来源（请使用这些ID）：
+{{available_sources_text}}
+---
+需要扩展的章节：
+{section_header_content}
+---
+您的任务是仅扩展上方提供的“需要扩展的章节”。请利用上下文信息（报告摘要、前一章节、后一章节）确保内容连贯一致且逻辑通顺。
+
+扩展要求：
+{expansion_requirements}
+确保所有信息均准确更新至 {current_date}。
+
+引文要求：
+- 仅可使用上方“可用引文来源列表”中提供的引文ID
+- 将引文格式化为 [n]，其中 n 是来源的确切ID
+- 将引文放在相关句子或段落的末尾
+- 请勿编造自己的引文编号
+- 请勿引用未在可用来源列表中的来源
+- 确保每个主要主张或统计数据都有适当的引文
+
+重要提示：
+- 请勿更改章节标题
+- 请勿添加研究不支持的信息
+- 请勿使用学术型引文（例如“医学杂志 (2020)”）
+- 请勿包含PDF/Text/ImageB/ImageC/ImageI标签或任何其他标记
+- 仅返回带有原始标题的扩展后章节
+
+返回带有完全相同标题但内容已扩展的扩展后章节。""",
+
+    "direct_initial_report_generation": """创建一份极其全面、详细的研究报告。
+标题：{report_title}
+基于研究结果：{findings_preview}
+主题：{themes}
+可用来源：{sources_info}
+详细程度：{detail_level}。当前日期：{current_date}。
+报告风格指南：{report_style_instructions}
+
+遵循 Markdown 格式。包括标题、引言、按主题分的章节、结论和参考文献（使用正确的引文格式 [n]）。
+至关重要：请勿在报告开头包含原始查询文本。直接从标题开始。
+
+引文要求：
+- 仅可使用“可用引文来源列表”中提供的引文ID
+- 将引文格式化为 [n]，其中 n 是来源的确切ID
+- 将引文放在相关句子或段落的末尾
+- 请勿编造自己的引文编号
+- 请勿引用未在可用来源列表中的来源
+- 确保每个主要主张或统计数据都有适当的引文
+
+格式（重要）：
+- 始终充分利用 markdown 的功能（例如，用于比较的表格、链接、引文等）
+- 以1级标题开始报告标题：“# {report_title}”
+- 包括执行摘要
+- 包括引言
+- 包括基于关键主题的章节
+- 包括结论
+- 包括参考文献章节""",
+
+    "simple_report_fallback": """根据研究结果生成一份研究报告。日期：{current_date}。""",
+
+    "global_report_consistency_check_prompt": """您是一位一丝不苟的编辑，负责审查研究报告的全局一致性和连贯性。
+报告标题：{{report_title}}
+主要研究问题：{{original_query}}
+
+待审查的完整报告内容：
+---
+{{full_report_content}}
+---
+
+请严格审查整份报告。根据以下标准确定需要改进的方面：
+1.  **整体连贯性：** 报告是否从一个章节逻辑地过渡到下一个章节？主题和论点之间是否存在平稳的过渡？
+2.  **论点一致性：** 整份报告中提出的论点、主张和数据是否一致？是否存在任何矛盾或未经证实的说法？
+3.  **主题完整性：** 报告是否始终围绕主要研究问题：“{{original_query}}”展开？中心主题是否在所有章节中都得到了充分的阐述和保持？
+4.  **语气和风格：** 所有章节的语气（例如，学术性、商业性）和写作风格是否一致？
+5.  **完整性和深度：** 报告是否充分地探讨了主要研究问题？是否存在任何明显的信息或分析空白？报告是否达到了其预期目的应有的深度？
+6.  **冗余性：** 报告中是否存在不必要的重复部分？是否有任何章节可以合并或精简？
+7.  **清晰度和精确性：** 语言是否清晰、精确且没有歧义？
+
+请以简洁的列表形式提供具体的、可操作的改进建议，并为每条建议编号。
+如果您未发现重大问题，请说明报告总体上一致且结构良好，但如果适用，仍可提供次要建议。
+请关注高层次的结构和内容一致性问题，而非次要的语法错误，除非这些错误严重影响清晰度。"""
+}
+
+def get_system_prompt(prompt_name: str, language: str) -> str:
+    """
+    Returns the system prompt string for the specified prompt name and language.
+    Defaults to English if the language is not 'zh' or the prompt is not found in the Chinese set.
+    """
+    if language.lower() == 'zh':
+        return SYSTEM_PROMPTS_ZH.get(prompt_name, SYSTEM_PROMPTS.get(prompt_name, "")) # Fallback to English if specific ZH prompt missing
+    return SYSTEM_PROMPTS.get(prompt_name, "")
+
 
 # User prompts
 USER_PROMPTS: Dict[str, str] = {

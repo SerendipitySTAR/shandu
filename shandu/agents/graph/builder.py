@@ -16,7 +16,8 @@ def build_graph(
     enhance_report_node,
     expand_key_sections_node,
     report_node,
-    evaluate_quality_node # New parameter
+    evaluate_quality_node, # New parameter
+    consistency_check_node # New parameter for consistency check
 ) -> Graph:
     """
     Build the research workflow graph with all nodes.
@@ -40,6 +41,7 @@ def build_graph(
     workflow.add_node("expand_key_sections", expand_key_sections_node)
     workflow.add_node("report", report_node)
     workflow.add_node("evaluate_quality", evaluate_quality_node) # New node
+    workflow.add_node("global_consistency_check", consistency_check_node) # Add new node
 
     workflow.add_edge("initialize", "generate_queries")
     workflow.add_edge("reflect", "generate_queries")
@@ -53,7 +55,8 @@ def build_graph(
     workflow.add_edge("format_citations", "generate_initial_report")
     workflow.add_edge("generate_initial_report", "enhance_report")
     workflow.add_edge("enhance_report", "expand_key_sections")
-    workflow.add_edge("expand_key_sections", "report")
+    workflow.add_edge("expand_key_sections", "global_consistency_check") # Reroute to consistency check
+    workflow.add_edge("global_consistency_check", "report") # New edge from consistency check to report
     workflow.add_edge("report", "evaluate_quality") # New edge
     
     workflow.set_entry_point("initialize")
