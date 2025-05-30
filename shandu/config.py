@@ -17,7 +17,7 @@ DEFAULT_CONFIG = {
         "max_results": 10,
         "region": "wt-wt",
         "safesearch": "moderate",
-        "user_agent": "Research 1.0"
+        "user_agent": "ShanduResearchAgent/1.0"
     },
     "research": {
         "default_depth": 2,
