@@ -42,38 +42,38 @@ _force_exit_lock = threading.Lock()
 def sanitize_markup(text):
     """
     Universal sanitizer for any text that will be displayed using Rich.
-    
+
     This function prevents any square bracket content from being interpreted as
     Rich markup tags. It can be used on any text that will be displayed in the console.
-    
+
     Args:
         text: The text to sanitize
-        
+
     Returns:
         Sanitized text safe for Rich console display
     """
 
     text_str = str(text)
-    
+
     # Step 1: Remove empty brackets which can be interpreted as empty tags
     text_str = re.sub(r'\[\]', '', text_str)
-    
+
     # Step 2: Remove any PDF-style tags that often cause problems with Rich
     text_str = re.sub(r'\[\/?(?:PDF|Text|ImageB|ImageC|ImageI)(?:\/?|\])(?:[^\]]*\])?', '', text_str)
-    
+
     # Step 3: Remove any orphaned or malformed tags
     text_str = re.sub(r'\[\/?[^\]]*\]?', '', text_str)
-    
+
     # Step 4: Remove all remaining square bracket content that could be misinterpreted
     text_str = re.sub(r'\[[^\]]*\]', '', text_str)
-    
+
     # Step 5: Escape the entire string to handle any other Rich markup characters
     return escape(text_str)
 
 def sanitize_error(error_msg):
     """
     Sanitize error messages to prevent Rich markup errors.
-    
+
     This function removes all potential Rich markup from error messages
     to prevent rendering errors in the console.
     """
@@ -87,7 +87,7 @@ def setup_force_exit_handler():
             _force_exit_requested = True
             console.print("\n[bold red]Force exit requested. Exiting immediately.[/]")
             os._exit(1)  # Force exit
-    
+
     # Register the handler for SIGINT (Ctrl+C)
     signal.signal(signal.SIGINT, force_exit_handler)
 
@@ -99,7 +99,7 @@ def display_banner():
     ███████╗███████║███████║██╔██╗ ██║██║  ██║██║   ██║
     ╚════██║██╔══██║██╔══██║██║╚██╗██║██║  ██║██║   ██║
     ███████║██║  ██║██║  ██║██║ ╚████║██████╔╝╚██████╔╝
-    ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝  ╚═════╝ 
+    ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝  ╚═════╝
                 Deep Research System
     """
     console.print(Panel(banner, style="bold blue"))
@@ -107,7 +107,7 @@ def display_banner():
 def create_research_dashboard(state: AgentState) -> Layout:
     """Create a rich dashboard layout for research progress."""
     layout = Layout()
-    
+
     layout.split(
         Layout(name="header", size=3),
         Layout(name="body"),
@@ -129,7 +129,7 @@ def create_research_dashboard(state: AgentState) -> Layout:
         Layout(name="sources_type_count_panel", ratio=2, minimum_size=3), # Renamed from "sources"
         Layout(name="chain_of_thought", ratio=2, minimum_size=3)
     )
-    
+
     elapsed_time = time.time() - state["start_time"]
     minutes, seconds = divmod(int(elapsed_time), 60)
     header_content = f"[bold blue]Research Query:[/] {state['query']}\n"
@@ -137,7 +137,7 @@ def create_research_dashboard(state: AgentState) -> Layout:
     header_content += f"[bold blue]Time:[/] {minutes}m {seconds}s | "
     header_content += f"[bold blue]Depth:[/] {state['current_depth']}/{state['depth']}"
     layout["header"].update(Panel(header_content, title="Shandu Deep Research"))
-    
+
     status_table = Table(show_header=False, box=None)
     status_table.add_column("Metric", style="blue")
     status_table.add_column("Value")
@@ -145,11 +145,11 @@ def create_research_dashboard(state: AgentState) -> Layout:
     status_table.add_row("Sources Found", str(len(state['sources'])))
     status_table.add_row("Subqueries Explored", str(len(state['subqueries'])))
     layout["status"].update(Panel(status_table, title="Research Progress"))
-    
+
     progress_percent = min(100, int((state['current_depth'] / max(1, state['depth'])) * 100))
     progress_bar = f"[{'#' * (progress_percent // 5)}{' ' * (20 - progress_percent // 5)}] {progress_percent}%"
     layout["progress"].update(Panel(progress_bar, title="Completion"))
-    
+
     findings_text = state["findings"][-2000:] if state["findings"] else "No findings yet..."
     layout["findings"].update(Panel(Markdown(findings_text), title="Latest Findings"))
     queries_table = Table(show_header=True)
@@ -158,7 +158,7 @@ def create_research_dashboard(state: AgentState) -> Layout:
     for i, query in enumerate(state["subqueries"][-10:], 1):  # Show last 10 queries
         queries_table.add_row(str(i), query)
     layout["queries"].update(Panel(queries_table, title="Research Paths"))
-    
+
     sources_table = Table(show_header=True)
     sources_table.add_column("Source", style="dim")
     sources_table.add_column("Count")
@@ -183,7 +183,7 @@ def create_research_dashboard(state: AgentState) -> Layout:
             selected_sources_content = selected_sources_display
         else:
             selected_sources_content = "Source selection complete, but no sources were chosen."
-            
+
     layout["selected_sources_panel"].update(Panel(selected_sources_content, title="Selected Key Sources"))
 
     # Panel for Identified Themes
@@ -196,17 +196,17 @@ def create_research_dashboard(state: AgentState) -> Layout:
         elif not identified_themes_text.strip(): # Check if it's an empty string after stripping
              themes_content = "Themes extraction attempted, but no themes were found."
     layout["themes_panel"].update(Panel(themes_content, title="Report Outline Themes"))
-    
+
     cot_text = "\n".join(state["chain_of_thought"][-5:]) if state["chain_of_thought"] else "No thoughts recorded yet..."
     layout["chain_of_thought"].update(Panel(cot_text, title="Chain of Thought"))
-    
+
     footer_text = "Press Ctrl+C to stop research"
     if is_shutdown_requested():
         shutdown_level = get_shutdown_level()
         footer_text = f"[yellow]Shutdown requested (attempt {shutdown_level}). Press Ctrl+C {4 - shutdown_level} more times to force exit.[/]"
-    
+
     layout["footer"].update(Panel(footer_text, style="dim"))
-    
+
     return layout
 
 @click.group()
@@ -240,12 +240,12 @@ def configure():
         default="",
         show_default=False
     )
-    
+
     user_agent = click.prompt(
         "User Agent",
         default=config.get("search", "user_agent")
     )
-    
+
     # Save config
     config.set("api", "base_url", api_base)
     config.set("api", "api_key", api_key)
@@ -253,30 +253,30 @@ def configure():
     config.set("scraper", "proxy", proxy)
     config.set("search", "user_agent", user_agent)
     config.save()
-    
-    console.print(Panel("[green]Configuration saved successfully!", 
-                       title="Success", 
+
+    console.print(Panel("[green]Configuration saved successfully!",
+                       title="Success",
                        border_style="green"))
 
 @cli.command()
 def info():
     """Display information about the current configuration."""
     console.print(Panel("Shandu Configuration Information", style="bold blue"))
-    
+
     table = Table(title="Current Configuration")
     table.add_column("Setting", style="cyan")
     table.add_column("Value", style="green")
-    
+
     table.add_row("API Base URL", config.get("api", "base_url"))
     table.add_row("API Key", "****" + config.get("api", "api_key")[-4:] if config.get("api", "api_key") else "Not set")
     table.add_row("Model", config.get("api", "model"))
-    
+
     table.add_row("Default Search Engines", ", ".join(config.get("search", "engines")))
     table.add_row("User Agent", config.get("search", "user_agent"))
-    
+
     table.add_row("Default Depth", str(config.get("research", "default_depth")))
     table.add_row("Default Breadth", str(config.get("research", "default_breadth")))
-    
+
     console.print(table)
 
 @cli.command()
@@ -285,11 +285,11 @@ def info():
 def clean(force: bool, cache_only: bool):
     """Delete configuration and cache files."""
     config_path = os.path.expanduser("~/.shandu")
-    
+
     if not os.path.exists(config_path):
         console.print("[yellow]No configuration or cache files found.[/]")
         return
-    
+
     if cache_only:
         cache_path = os.path.join(config_path, "cache")
         if os.path.exists(cache_path):
@@ -298,12 +298,12 @@ def clean(force: bool, cache_only: bool):
                 if not confirm:
                     console.print("[yellow]Operation cancelled.[/]")
                     return
-            
+
             try:
                 import shutil
                 shutil.rmtree(cache_path)
-                console.print(Panel("[green]Cache files deleted successfully!", 
-                                   title="Success", 
+                console.print(Panel("[green]Cache files deleted successfully!",
+                                   title="Success",
                                    border_style="green"))
             except Exception as e:
                 console.print(f"[red]Error deleting cache files: {sanitize_error(e)}[/]")
@@ -315,12 +315,12 @@ def clean(force: bool, cache_only: bool):
             if not confirm:
                 console.print("[yellow]Operation cancelled.[/]")
                 return
-        
+
         try:
             import shutil
             shutil.rmtree(config_path)
-            console.print(Panel("[green]Configuration and cache files deleted successfully!", 
-                               title="Success", 
+            console.print(Panel("[green]Configuration and cache files deleted successfully!",
+                               title="Success",
                                border_style="green"))
         except Exception as e:
             console.print(f"[red]Error deleting configuration: {sanitize_error(e)}[/]")
@@ -331,7 +331,7 @@ def clean(force: bool, cache_only: bool):
 @click.option("--breadth", "-b", default=None, type=int, help="Research breadth (3-10)")
 @click.option("--output", "-o", help="Save report to file")
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed progress")
-@click.option("--strategy", "-s", default="langgraph", type=click.Choice(["langgraph", "agent"]), 
+@click.option("--strategy", "-s", default="langgraph", type=click.Choice(["langgraph", "agent"]),
               help="Research strategy to use")
 @click.option("--include-chain-of_thought", "-c", is_flag=True, help="Include chain of thought in report") # Corrected option name
 @click.option("--include-objective", "-i", is_flag=True, help="Include objective section in report")
@@ -349,15 +349,17 @@ def clean(force: bool, cache_only: bool):
     type=str,
     help="Set the detail level for the report: 'brief', 'standard', 'detailed', or 'custom_WORDCOUNT' (e.g., 'custom_1500')."
 )
-# This is where the new @click.option for language was in the previous attempt, it's correct.
-# The existing file already has the language option from a previous run.
-# I need to ensure the function signature and the call to research_sync are correct.
-# The following search block should be the function definition.
+@click.option(
+    "--language",
+    default="zh",
+    type=str,
+    help="Language for the research report (e.g., 'en', 'zh', 'fr')."
+)
 def research(
-    query: str, 
-    depth: Optional[int], 
-    breadth: Optional[int], 
-    output: Optional[str], 
+    query: str,
+    depth: Optional[int],
+    breadth: Optional[int],
+    output: Optional[str],
     verbose: bool,
     strategy: str,
     include_chain_of_thought: bool, # Corrected parameter name
@@ -373,29 +375,29 @@ def research(
         depth = config.get("research", "default_depth", 2)
     if breadth is None:
         breadth = config.get("research", "default_breadth", 4)
-    
+
     if depth < 1 or depth > 5:
         console.print("[red]Error: Depth must be between 1 and 5[/]")
         sys.exit(1)
     if breadth < 2 or breadth > 10:
         console.print("[red]Error: Breadth must be between 2 and 10[/]")
         sys.exit(1)
-    
+
     api_base = config.get("api", "base_url")
     api_key = config.get("api", "api_key")
     model = config.get("api", "model")
     temperature = config.get("api", "temperature", 0)
-    
+
     llm = ChatOpenAI(
         base_url=api_base,
         api_key=api_key,
         model=model,
         temperature=temperature
     )
-    
+
     searcher = UnifiedSearcher()
     scraper = WebScraper(proxy=config.get("scraper", "proxy"))
-    
+
     console.print(Panel(
         f"[bold blue]Query:[/] {query}\n"
         f"[bold blue]Depth:[/] {depth}\n"
@@ -405,7 +407,7 @@ def research(
         title="Research Parameters",
         border_style="blue"
     ))
-    
+
     try:
         refined_query = asyncio.run(clarify_query(query, llm))
     except KeyboardInterrupt:
@@ -420,10 +422,10 @@ def research(
             console.print("[bold blue]This will show detailed information about the search process and pages being analyzed.[/]")
             console.print("[dim]The research process may take some time depending on depth and breadth settings.[/]")
             console.print("[dim]You'll see search queries, selected URLs, and content analysis in real-time.[/]")
-            
+
             # Track the last displayed state hash to avoid duplicate updates
             last_state_hash = None
-            
+
             def debounced_update_display(state):
                 nonlocal last_state_hash
 
@@ -434,18 +436,18 @@ def research(
                 subqueries_count = len(state.get("subqueries", []))
 
                 current_hash = f"{status}_{current_depth}_{sources_count}_{subqueries_count}"
-                
+
                 # Only update if there's a meaningful change to display
                 if current_hash != last_state_hash:
                     last_state_hash = current_hash
-                    
+
                     if verbose:
                         dashboard = create_research_dashboard(state)
                         live.update(dashboard)
                     else:
                         tree = display_research_progress(state)
                         live.update(tree)
-            
+
             try:
                 result = graph.research_sync(
                     refined_query,
@@ -471,7 +473,7 @@ def research(
         # Use agent-based research
         from .agents.agent import ResearchAgent
         agent = ResearchAgent(llm=llm, searcher=searcher, scraper=scraper)
-        
+
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -480,31 +482,31 @@ def research(
             console=console
         ) as progress:
             task = progress.add_task("[green]Researching...", total=depth)
-            
+
             try:
                 result = agent.research_sync(
                     refined_query,
                     depth=depth,
                     engines=config.get("search", "engines")
                 )
-                
+
                 progress.update(task, completed=depth)
-                
+
             except KeyboardInterrupt:
                 console.print("\n[yellow]Research interrupted by user.[/]")
                 sys.exit(0)
             except Exception as e:
                 console.print(f"\n[red]Error during research: {sanitize_error(e)}[/]")
                 sys.exit(1)
-    
+
     # Display result
     console.print("\n[bold green]Research complete![/]")
-    
+
     if output:
-        result.save_to_file(output, include_chain_of_thought, include_objective)
+        result.save_to_file(output, include_chain_of_thought, include_objective, language)
         console.print(f"[green]Report saved to {output}[/]")
     else:
-        console.print(Markdown(result.to_markdown(include_chain_of_thought, include_objective)))
+        console.print(Markdown(result.to_markdown(include_chain_of_thought, include_objective, language)))
 
 @cli.command()
 @click.argument("query")
@@ -518,22 +520,22 @@ def aisearch(query: str, engines: Optional[str], max_results: int, output: Optio
         engine_list = [e.strip() for e in engines.split(",")]
     else:
         engine_list = config.get("search", "engines")
-    
+
     api_base = config.get("api", "base_url")
     api_key = config.get("api", "api_key")
     model = config.get("api", "model")
     temperature = config.get("api", "temperature", 0)
-    
+
     llm = ChatOpenAI(
         base_url=api_base,
         api_key=api_key,
         model=model,
         temperature=temperature
     )
-    
+
     searcher = UnifiedSearcher(max_results=max_results)
     ai_searcher = AISearcher(llm=llm, searcher=searcher, max_results=max_results)
-    
+
     console.print(Panel(
         f"[bold blue]Query:[/] {query}\n"
         f"[bold blue]Engines:[/] {', '.join(engine_list)}\n"
@@ -542,24 +544,24 @@ def aisearch(query: str, engines: Optional[str], max_results: int, output: Optio
         title="AI Search Parameters",
         border_style="blue"
     ))
-    
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=console
     ) as progress:
         task = progress.add_task("[green]Searching and analyzing...", total=1)
-        
+
         try:
             result = ai_searcher.search_sync(query, engine_list, detailed)
             progress.update(task, completed=1)
         except Exception as e:
             console.print(f"[red]Error during AI search: {sanitize_error(e)}[/]")
             sys.exit(1)
-    
+
     # Display result
     console.print("\n[bold green]Search and analysis complete![/]")
-    
+
     if output:
         with open(output, 'w', encoding='utf-8') as f:
             f.write(result.to_markdown())
@@ -591,15 +593,15 @@ def search(query: str, engines: Optional[str], max_results: int):
         console=console
     ) as progress:
         task = progress.add_task("[green]Searching...", total=1)
-        
+
         try:
             results = searcher.search_sync(query, engine_list)
             progress.update(task, completed=1)
-            
+
         except Exception as e:
             console.print(f"[red]Error during search: {sanitize_error(e)}[/]")
             sys.exit(1)
-    
+
     console.print(f"\n[bold green]Found {len(results)} results:[/]")
 
     table = Table(title=f"Search Results for '{query}'")
@@ -607,7 +609,7 @@ def search(query: str, engines: Optional[str], max_results: int):
     table.add_column("Title", style="green")
     table.add_column("URL", style="blue")
     table.add_column("Snippet", style="dim")
-    
+
     for result in results:
         table.add_row(
             result.source,
@@ -615,7 +617,7 @@ def search(query: str, engines: Optional[str], max_results: int):
             result.url[:50] + "..." if len(result.url) > 50 else result.url,
             result.snippet[:100] + "..." if len(result.snippet) > 100 else result.snippet
         )
-    
+
     console.print(table)
 
 @cli.command()
@@ -624,29 +626,29 @@ def search(query: str, engines: Optional[str], max_results: int):
 def scrape(url: str, dynamic: bool):
     """Scrape and analyze a webpage."""
     scraper = WebScraper(proxy=config.get("scraper", "proxy"))
-    
+
     console.print(Panel(
         f"[bold blue]URL:[/] {url}\n"
         f"[bold blue]Dynamic Rendering:[/] {'Enabled' if dynamic else 'Disabled'}",
         title="Scrape Parameters",
         border_style="blue"
     ))
-    
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=console
     ) as progress:
         task = progress.add_task("[green]Scraping...", total=1)
-        
+
         try:
             result = asyncio.run(scraper.scrape_url(url, dynamic=dynamic))
             progress.update(task, completed=1)
-            
+
         except Exception as e:
             console.print(f"[red]Error during scraping: {sanitize_error(e)}[/]")
             sys.exit(1)
-    
+
     if result.is_successful():
         console.print(f"\n[bold green]Successfully scraped {url}[/]")
         layout = Layout()
@@ -658,7 +660,7 @@ def scrape(url: str, dynamic: bool):
             Layout(name="content", ratio=2),
             Layout(name="metadata", ratio=1)
         )
-        
+
         header_content = f"[bold blue]Title:[/] {result.title}\n"
         header_content += f"[bold blue]URL:[/] {result.url}\n"
         header_content += f"[bold blue]Content Type:[/] {result.content_type}"
@@ -668,13 +670,13 @@ def scrape(url: str, dynamic: bool):
         metadata_table = Table(show_header=True)
         metadata_table.add_column("Key", style="cyan")
         metadata_table.add_column("Value", style="green")
-        
+
         for key, value in result.metadata.items():
             if value and isinstance(value, str):
                 metadata_table.add_row(key, value[:50] + "..." if len(value) > 50 else value)
-        
+
         layout["metadata"].update(Panel(metadata_table, title="Metadata"))
-        
+
         console.print(layout)
     else:
         console.print(f"[red]Failed to scrape {url}: {result.error}[/]")

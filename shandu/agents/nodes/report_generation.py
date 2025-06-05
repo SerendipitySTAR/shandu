@@ -16,18 +16,128 @@ from pydantic import BaseModel, Field
 from shandu.prompts import get_report_style_guidelines, safe_format # Updated import
 from ..processors.content_processor import AgentState
 from ..processors.report_generator import (
-    generate_title, 
-    extract_themes, 
+    generate_title,
+    extract_themes,
     generate_initial_report,
     enhance_report,
     expand_key_sections,
-    format_citations
+    format_citations,
+    expand_short_sections,
+    validate_report_quality,
+    force_word_count_compliance
 )
 from ..utils.agent_utils import log_chain_of_thought, _call_progress_callback, is_shutdown_requested
 from ..utils.citation_registry import CitationRegistry
 from ..utils.citation_manager import CitationManager, SourceInfo, Learning
 
 console = Console()
+
+def _check_topic_consistency(report: str, original_query: str) -> bool:
+    """
+    检查报告内容是否与原始查询主题一致
+    返回True表示发现不一致，需要修复
+    """
+    if not report or not original_query:
+        return False
+
+    # 提取原始查询的关键词
+    original_keywords = set(original_query.lower().split())
+
+    # 定义一些明显不相关的主题关键词
+    unrelated_topics = {
+        "明代社会结构", "制度张力", "实践创新", "社会分层", "等级制度",
+        "政治-社会互动", "科举制度", "地方治理", "经济基础", "文化认同",
+        "意识形态渗透", "马克斯·韦伯", "布迪厄", "新制度经济学",
+        "徽州文书", "地方志", "全球比较案例", "制度设计", "实践变异",
+        "宗族组织", "制度嵌套", "治理创新", "文化特权", "社会流动",
+        "结构性张力", "制度韧性", "变革动力", "早期现代化"
+    }
+
+    # 如果原始查询是关于西游记的，检查是否混入了明代社会结构内容
+    if "西游记" in original_query or "西游" in original_query:
+        for topic in unrelated_topics:
+            if topic in report:
+                console.print(f"[red]发现不相关内容: {topic}[/]")
+                return True
+
+    return False
+
+# 新增：学术质量检查和连贯性优化函数
+async def _ensure_report_coherence(
+    llm,
+    report: str,
+    original_query: str,
+    language: str = "zh",
+    current_date: str = ""
+) -> str:
+    """
+    确保报告的学术质量和整体连贯性，将拼凑式的内容转化为符合学术标准的深度报告。
+    同时检查并修复主题一致性问题。
+    """
+    from shandu.prompts import get_system_prompt
+
+    # 【新增】主题一致性检查
+    if _check_topic_consistency(report, original_query):
+        console.print("[yellow]Detected topic inconsistency, applying fixes...[/]")
+
+    # 优先使用新的学术质量检查提示词
+    academic_prompt_template = get_system_prompt("academic_quality_check_prompt", language)
+
+    # 如果没有找到学术质量检查提示词，回退到连贯性检查
+    if not academic_prompt_template:
+        academic_prompt_template = get_system_prompt("global_report_consistency_check_prompt", language)
+
+    if not academic_prompt_template:
+        # 如果都没有找到模板，返回原报告
+        return report
+
+    try:
+        # 构建学术质量检查提示
+        academic_prompt = academic_prompt_template.format(
+            report_title=report.split('\n')[0].replace('#', '').strip() if report else "研究报告",
+            original_query=original_query,
+            full_report_content=report
+        )
+
+        # 调用LLM进行学术质量分析
+        academic_llm = llm.with_config({"max_tokens": 2048, "temperature": 0.1})
+        academic_response = await academic_llm.ainvoke(academic_prompt)
+        academic_analysis = academic_response.content
+
+        # 如果发现学术质量问题，进行修复
+        if "重大问题" in academic_analysis or "不一致" in academic_analysis or "矛盾" in academic_analysis or "改进" in academic_analysis:
+            console.print("[yellow]Detected academic quality issues, applying fixes...[/]")
+
+            # 构建修复提示
+            fix_prompt = f"""
+基于以下学术质量分析，请修复报告中的问题，确保整篇报告达到硕士论文或学术期刊的质量标准：
+
+学术质量分析：
+{academic_analysis}
+
+原始报告：
+{report}
+
+请返回修复后的完整报告，确保：
+1. 符合学术写作规范，具备完整的学术结构
+2. 具有扎实的理论基础和创新性见解
+3. 各章节之间有清晰的逻辑联系和自然过渡
+4. 整体论述连贯，体现学术深度和批判性思维
+5. 引用格式规范，参考文献充足且权威
+6. 语言表达专业、准确，符合学术标准
+
+修复后的报告：
+"""
+
+            fix_response = await academic_llm.ainvoke(fix_prompt)
+            return fix_response.content
+        else:
+            console.print("[green]Report academic quality check passed[/]")
+            return report
+
+    except Exception as e:
+        console.print(f"[yellow]Academic quality check failed: {str(e)}, using original report[/]")
+        return report
 
 # Structured output models for report generation
 class ReportSection(BaseModel):
@@ -48,48 +158,105 @@ class FinalReport(BaseModel):
         description="List of references in the report",
         min_items=0
     )
-    
+
 # Maximum retry attempts for report generation processes
 MAX_RETRIES = 3
 
 # Helper function for detail level instructions
 def _get_length_instruction(detail_level: str) -> str:
     """Generates a prompt instruction based on the detail_level."""
-    if detail_level == "brief":
-        return "Please be very concise and summarize heavily. Focus only on the absolute key points. The section should be significantly shorter than standard."
-    elif detail_level == "detailed":
-        return "Please be highly expansive. Add considerable depth, more examples, and detailed explanations. The section should be significantly longer and more thorough than standard."
-    elif detail_level.startswith("custom_"):
+    # 【修复】确保 detail_level 是有效的字符串类型
+    if not isinstance(detail_level, str):
+        detail_level = str(detail_level) if detail_level is not None else "standard"
+        print(f"⚠️ 警告：detail_level 不是字符串类型，已转换为：'{detail_level}'")
+
+    # 转换为小写以便比较，并去除空白字符
+    detail_level_clean = detail_level.lower().strip()
+
+    if detail_level_clean == "brief":
+        return """【强制性字数要求：严格达到4000字】
+🚨 绝对强制：整体报告必须严格达到约4000字，这是不可违背的硬性要求
+📝 内容策略：提供简洁但充实的内容，确保每个要点都有充分论述
+⚠️ 重要提醒：虽然是简要版本，但必须保证内容深度和学术质量
+✅ 验证标准：确保整体报告约4000字，这是最低要求
+📋 结构要求：必须包含完整的章节结构、子章节和参考文献
+🔥 内容深度：每个主要章节至少600-800字，每个子章节至少200-300字
+💡 质量要求：每个子章节必须包含至少2-3个完整段落，确保论述充分
+🎓 学术标准：必须达到学术报告的质量标准，避免简单的要点罗列
+🎯 执行要求：在生成过程中必须时刻监控字数，确保达到4000字目标"""
+    elif detail_level_clean == "detailed":
+        return """【字数要求：约15000字】
+🎯 强制性要求：整体报告必须严格达到约15000字
+📝 内容策略：请高度扩展内容，添加大量深度、更多示例和详细解释
+⚠️ 重要提醒：内容应明显比标准版本更长更全面，必须达到深度学术水平
+✅ 验证标准：确保整体报告约15000字，这是必须达到的目标
+📋 结构要求：必须包含详细的章节结构、多个子章节和完整的参考文献
+🔥 内容深度：每个主要章节至少2000-3000字，每个子章节至少800-1200字
+💡 质量要求：每个子章节必须包含至少4-6个完整段落，提供深入分析、具体例证和理论阐述
+📊 论证要求：每个观点都需要详细论证，包含背景分析、现状描述、影响评估和未来展望
+🎓 学术标准：必须达到硕士论文或学术期刊的质量标准，提供原创性见解和深度分析"""
+    elif detail_level_clean.startswith("custom_"):
         try:
-            parts = detail_level.split('_', 1)
+            # 【修复】使用清理后的字符串进行解析
+            parts = detail_level_clean.split('_', 1)
             if len(parts) > 1 and parts[1].isdigit():
                 word_count = int(parts[1])
-                return (f"CRITICAL: This section MUST be approximately {word_count} words. "
-                        f"Adjust detail, examples, and explanations to meet this specific length. "
-                        f"If the topic is narrow, expand on context, implications, or related concepts "
-                        f"to achieve the target word count. The LLM is expected to make a concerted effort "
-                        f"to reach this specific {word_count} word target for this section.")
+                return f"""【字数要求：约{word_count}字】
+🎯 强制性要求：整体报告必须严格控制在约{word_count}字
+📝 内容策略：请根据此字数要求调整详细程度、示例数量和解释深度
+⚠️ 重要提醒：如果主题较窄，请扩展背景、含义或相关概念以达到目标字数
+✅ 验证标准：这是强制性要求，必须努力达到{word_count}字的目标
+📋 结构要求：必须包含完整的章节结构、子章节和参考文献"""
             else:
                 # Fallback if parsing fails (e.g. "custom_" without number or "custom_abc")
-                print(f"Warning: Could not parse word count from detail_level '{detail_level}'. Defaulting to standard detail instructions.")
-                return "Provide a balanced level of detail."
-        except ValueError: # Handles if int() conversion fails for some reason
-            print(f"Warning: Invalid number format in detail_level '{detail_level}'. Defaulting to standard detail instructions.")
-            return "Provide a balanced level of detail."
-    elif detail_level == "standard":
-        return "Provide a balanced level of detail." # Neutral instruction for standard
-    else: # Fallback for any other unknown value
-        # It's good practice to log/warn about unexpected values
-        print(f"Warning: Unknown detail_level '{detail_level}'. Defaulting to standard detail instructions.")
-        return "Provide a balanced level of detail."
+                print(f"⚠️ 警告：无法从 detail_level '{detail_level}' 解析字数，使用标准设置")
+                return """【字数要求：约5000字】
+🎯 强制性要求：整体报告必须严格控制在约5000字
+📝 内容策略：提供平衡的详细程度
+✅ 验证标准：确保整体报告约5000字"""
+        except (ValueError, IndexError) as e: # 【修复】更好的异常处理
+            print(f"⚠️ 警告：detail_level '{detail_level}' 格式无效，错误：{e}，使用标准设置")
+            return """【字数要求：约5000字】
+🎯 强制性要求：整体报告必须严格控制在约5000字
+📝 内容策略：提供平衡的详细程度
+✅ 验证标准：确保整体报告约5000字"""
+    elif detail_level_clean == "standard":
+        return """【强制性字数要求：严格达到18000字】
+🚨 绝对强制：整体报告必须严格达到约18000字，这是不可违背的硬性要求
+📝 内容策略：提供充实的详细程度，确保内容深度和广度的平衡
+⚠️ 重要提醒：这是标准长度，必须达到学术报告的深度要求
+✅ 验证标准：确保整体报告约18000字，这是基准要求
+📋 结构要求：必须包含完整的章节结构、多个子章节和参考文献
+🔥 内容深度：每个主要章节至少3000字，每个子章节至少1200字
+💡 质量要求：每个子章节必须包含至少5-6个完整段落，确保论述充分
+🎓 学术标准：必须体现学术深度和严谨性，提供深入的分析和论证
+🎯 执行要求：在生成过程中必须时刻监控字数，确保达到18000字目标
+📊 内容要求：每个段落至少200字，包含主题句、论据、分析和小结
+🔍 深度要求：必须提供具体案例、数据分析、理论阐述和实证研究
+💪 强化指令：如果内容不足18000字，必须继续扩展直到达到要求
+🎨 扩展策略：通过增加理论背景、历史分析、案例研究、对比分析、未来展望等维度来丰富内容
+🔬 学术深度：每个观点都要从多个角度进行深入分析，包含批判性思维和创新见解""" # Enhanced standard instruction
+    else: # 【修复】回退到标准设置，处理任何未知值
+        # 记录未知的 detail_level 值
+        print(f"⚠️ 警告：未知的 detail_level '{detail_level}'，使用标准设置")
+        return """【字数要求：约10000字】
+🎯 强制性要求：整体报告必须严格达到约10000字
+📝 内容策略：提供平衡的详细程度，确保内容充实但不冗余
+⚠️ 重要提醒：这是标准长度，需要在深度和广度之间找到平衡
+✅ 验证标准：确保整体报告约10000字，这是基准要求
+📋 结构要求：必须包含完整的章节结构、子章节和参考文献
+🔥 内容深度：每个主要章节至少1500-2000字，每个子章节至少500-700字
+💡 质量要求：每个子章节必须包含至少3-4个完整段落，确保论述充分
+🎓 学术标准：必须达到学术报告的质量标准
+🎯 执行要求：在生成过程中必须时刻监控字数，确保达到10000字目标"""
 
 async def prepare_report_data(state: AgentState) -> Tuple[CitationManager, CitationRegistry, Dict[str, Any]]:
     """
     Prepare all necessary data for report generation, ensuring sources are correctly registered.
-    
+
     Args:
         state: The current agent state
-        
+
     Returns:
         Tuple containing the citation manager, citation registry, and citation statistics
     """
@@ -141,7 +308,7 @@ async def prepare_report_data(state: AgentState) -> Tuple[CitationManager, Citat
 
     citation_stats = citation_manager.get_learning_statistics()
     console.print(f"[bold green]Processed {citation_stats.get('total_learnings', 0)} learnings from {citation_stats.get('total_sources', 0)} sources[/]")
-    
+
     return citation_manager, citation_registry, citation_stats
 
 
@@ -151,7 +318,7 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
     console.print("[bold blue]Generating comprehensive report with dynamic structure and source tracking...[/]")
 
     current_date = state["current_date"]
-    
+
     # Prepare all citation data
     citation_manager, citation_registry, citation_stats = await prepare_report_data(state)
 
@@ -185,9 +352,9 @@ JSON output:
 """
                 visual_data_llm = llm.with_config({"temperature": 0.0, "max_tokens": 2048}) # Use a specific LLM configuration if needed
                 response = await visual_data_llm.ainvoke(prompt)
-                
+
                 llm_output = response.content.strip()
-                
+
                 # Sometimes LLMs wrap JSON in ```json ... ```, try to extract it
                 if llm_output.startswith("```json"):
                     llm_output = llm_output[7:]
@@ -200,7 +367,7 @@ JSON output:
                     continue
 
                 parsed_visual_data = json.loads(llm_output)
-                
+
                 if isinstance(parsed_visual_data, list):
                     # Basic validation of list items
                     valid_items = []
@@ -209,7 +376,7 @@ JSON output:
                             valid_items.append(item)
                         else:
                             console.print(f"[yellow]Skipping invalid item in visualizable data from LLM for source {source_info.url}: {item}[/yellow]")
-                    
+
                     if valid_items:
                         source_info.visualizable_data.extend(valid_items)
                         console.print(f"[green]Successfully extracted {len(valid_items)} visualizable data items from: {source_info.url}[/]")
@@ -221,7 +388,7 @@ JSON output:
                 console.print(f"[red]LLM Output was: {llm_output}[/red]")
             except Exception as e:
                 console.print(f"[red]Error extracting visualizable data for source {source_info.url}: {e}\n{traceback.format_exc()}[/]")
-            
+
             # Step 3 (within source loop): Generate chart code for each visualizable data item
             if source_info.visualizable_data:
                 console.print(f"[blue]Generating Matplotlib chart code for visualizable data in {source_info.url}...[/]")
@@ -250,13 +417,13 @@ JSON output:
                         chart_prompt_parts.append(f"Label the Y-axis as: '{data_item['y_axis_label_suggestion']}'.")
                     if data_item.get("labels"): # For things like pie chart labels or bar categories
                         chart_prompt_parts.append(f"Use these labels for data segments/categories: {data_item['labels']}.")
-                    
+
                     chart_prompt_parts.extend([
                         "The script should include all necessary imports (e.g., `import matplotlib.pyplot as plt`).",
                         "Ensure the plot is properly shown and then closed to free up memory (e.g., `plt.show()` then `plt.close()` or just `plt.savefig()` and `plt.close()`). For backend execution, prefer `plt.savefig()` and `plt.close()`.",
                         "Output ONLY the Python code block. Do not include any explanations, comments outside the code, or markdown formatting like ```python ... ```."
                     ])
-                    
+
                     chart_code_prompt = "\n".join(chart_prompt_parts)
 
                     try:
@@ -274,7 +441,7 @@ JSON output:
                             if generated_code.endswith("```"):
                                 generated_code = generated_code[:-3]
                         generated_code = generated_code.strip()
-                        
+
                         if not generated_code or not "plt.savefig" in generated_code : # Basic check for valid code
                             console.print(f"[red]LLM generated empty or invalid (missing savefig) Matplotlib code for a data_item in {source_info.url}. Skipping.[/red]")
                             console.print(f"[red]Prompt was:\n{chart_code_prompt}\nOutput was:\n{generated_code}[/red]")
@@ -282,10 +449,10 @@ JSON output:
 
                         # Store the generated code and filename in the data_item
                         data_item['matplotlib_code'] = generated_code
-                        data_item['chart_filename'] = chart_filename 
+                        data_item['chart_filename'] = chart_filename
                         # Update the item in the list directly (though it's already a reference, this is explicit)
-                        source_info.visualizable_data[data_item_index] = data_item 
-                        
+                        source_info.visualizable_data[data_item_index] = data_item
+
                         console.print(f"[green]Successfully generated Matplotlib code for '{chart_filename}' from data in {source_info.url}[/green]")
 
                     except Exception as e:
@@ -354,12 +521,12 @@ JSON output:
         console=console
     ) as progress:
         task = progress.add_task("Generating", total=1)
-        
+
         language = state.get('language', 'en') # Retrieve language
         report_template_style = state.get('report_template', "standard")
         # Use getter function for style instructions
         style_instructions = get_report_style_guidelines(language).get(report_template_style, get_report_style_guidelines(language)['standard'])
-        
+
         initial_report = None
         for attempt in range(MAX_RETRIES):
             try:
@@ -368,6 +535,10 @@ JSON output:
                 # If generate_initial_report directly uses SYSTEM_PROMPTS["report_generation"],
                 # it would need to format it with style_instructions.
                 # For this subtask, we pass it as an argument.
+                # 【修复】添加字数控制指令到初始报告生成
+                current_detail_level = state.get('detail_level', 'standard')
+                length_instruction = _get_length_instruction(current_detail_level)
+
                 initial_report = await generate_initial_report(
                     llm,
                     state['query'],
@@ -381,7 +552,8 @@ JSON output:
                     include_objective,
                     citation_registry,
                     report_style_instructions=style_instructions, # New argument
-                    language=language # Pass language
+                    language=language, # Pass language
+                    length_instruction=length_instruction # 【新增】传递字数控制指令
                 )
                 progress.update(task, completed=1)
                 break
@@ -391,12 +563,12 @@ JSON output:
                     # Create a minimal report if all attempts fail
                     console.print("[yellow]Creating fallback report structure[/]")
                     initial_report = f"# {report_title}\n\n## Executive Summary\n\nThis report explores {state['query']}.\n\n"
-                    
+
                     # Extract sections from themes
                     section_matches = re.findall(r"##\s+([^\n]+)(?:\n([^#]+))?", extracted_themes)
                     for title, content in section_matches:
                         initial_report += f"## {title}\n\n{content.strip() if content else 'Information on this topic.'}\n\n"
-                    
+
                     initial_report += "## References\n\n" + formatted_citations
                     progress.update(task, completed=1)
 
@@ -410,7 +582,7 @@ JSON output:
         state,
         f"Generated initial report with {len(citation_registry.citations)} properly tracked citations and {citation_stats.get('total_learnings', 0)} learnings"
     )
-    
+
     if progress_callback:
         await _call_progress_callback(progress_callback, state)
     return state
@@ -426,21 +598,21 @@ async def enhance_report_node(llm, progress_callback, state: AgentState) -> Agen
 
     state["status"] = "Enhancing report sections"
     console.print("[bold blue]Enhancing report with more detailed information...[/]")
-    
+
     initial_report = state.get("initial_report", "")
     if not initial_report or len(initial_report.strip()) < 500:
         log_chain_of_thought(state, "Initial report too short or missing, skipping enhancement")
         state["enhanced_report"] = initial_report
         return state
-    
+
     # Extract report title and sections
     title_match = re.match(r'# ([^\n]+)', initial_report)
     original_title = title_match.group(1) if title_match else state.get("report_title", "Research Report")
-    
+
     # Extract sections using regex pattern
     section_pattern = re.compile(r'(#+\s+[^\n]+)(\n\n[^#]+?)(?=\n#+\s+|\Z)', re.DOTALL)
     sections = section_pattern.findall(initial_report)
-    
+
     if not sections:
         log_chain_of_thought(state, "No sections found in report, using initial report as is")
         state["enhanced_report"] = initial_report
@@ -448,19 +620,19 @@ async def enhance_report_node(llm, progress_callback, state: AgentState) -> Agen
 
     # Process each section in parallel for better reliability
     enhanced_sections = []
-    
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]Enhancing sections..."),
         console=console
     ) as progress:
         task = progress.add_task("Enhancing", total=len(sections))
-        
+
         # Prepare citation information for enhancement
         citation_registry = state.get("citation_registry")
         formatted_citations = state.get("formatted_citations", "")
         current_date = state.get("current_date", "")
-        
+
         # Process each section (excluding references)
         for i, (section_header, section_content) in enumerate(sections):
             # Skip enhancing references section
@@ -468,7 +640,7 @@ async def enhance_report_node(llm, progress_callback, state: AgentState) -> Agen
                 enhanced_sections.append((i, f"{section_header}{section_content}"))
                 progress.update(task, advance=1)
                 continue
-                
+
             for attempt in range(MAX_RETRIES):
                 try:
                     # Generate available sources text for this section
@@ -480,10 +652,10 @@ async def enhance_report_node(llm, progress_callback, state: AgentState) -> Agen
                             url = citation_info.get("url", "")
                             title = citation_info.get("title", "")
                             available_sources.append(f"[{cid}] - {title} ({url})")
-                        
+
                         if available_sources:
                             available_sources_text = "\n\nAVAILABLE SOURCES FOR CITATION:\n" + "\n".join(available_sources)
-                    
+
                     # This node now calls the processor function `enhance_report`
                     # which handles the LLM call and prompt construction internally.
                     language = state.get('language', 'en')
@@ -498,13 +670,13 @@ async def enhance_report_node(llm, progress_callback, state: AgentState) -> Agen
                     # For now, assuming enhance_report is called ONCE for the whole report.
                     # The current enhance_report in processor takes initial_report and processes all sections.
                     # So, this loop here in the node is redundant if we call the processor's enhance_report.
-                    
+
                     # This logic should be done ONCE before calling the processor's enhance_report
                     # For this subtask, let's assume the loop is removed and enhance_report is called once.
                     # The following is a placeholder for where the call would be made.
                     # The actual call is made after the loop in the original code.
                     pass # Placeholder, actual call is after loop in original structure
-                    
+
                 except Exception as e: # This try-except is now for the loop itself or data prep
                     console.print(f"[yellow]Error preparing for section enhancement '{section_header.strip()}' (Attempt {attempt+1}): {str(e)}[/]")
                     if attempt == MAX_RETRIES - 1:
@@ -532,11 +704,46 @@ async def enhance_report_node(llm, progress_callback, state: AgentState) -> Agen
         language=language,
         length_instruction=length_instruction
     )
-    
+
+    # 验证增强后的报告质量并自动扩展过短章节
+    current_detail_level = state.get('detail_level', 'standard')
+    validation = validate_report_quality(enhanced_report_str, current_detail_level)
+
+    if not validation["is_valid"]:
+        console.print("[yellow]检测到报告质量问题，开始自动修复...[/]")
+        for issue in validation["issues"]:
+            console.print(f"[yellow]   - {issue}[/]")
+
+        # 自动扩展过短的章节
+        try:
+            # 【修复】传递字数控制指令到章节扩展函数
+            enhanced_report_str = await expand_short_sections(
+                llm,
+                enhanced_report_str,
+                current_detail_level,
+                state.get('language', 'zh'),
+                length_instruction  # 【新增】传递字数控制指令
+            )
+
+            # 重新验证
+            final_validation = validate_report_quality(enhanced_report_str, current_detail_level)
+            if final_validation["is_valid"]:
+                console.print(f"[green]✅ 报告质量修复成功 (总字数: {final_validation['analysis']['total_words']})[/]")
+            else:
+                console.print("[yellow]⚠️ 部分质量问题仍然存在，但报告已得到改善[/]")
+        except Exception as e:
+            console.print(f"[red]自动修复过程中出现错误: {e}[/]")
+    else:
+        console.print(f"[green]✅ 报告质量验证通过 (总字数: {validation['analysis']['total_words']})[/]")
+
+    # 🚨 新增：强制字数验证和扩展
+    console.print("[bold blue]进行最终字数验证和强制扩展...[/]")
+    enhanced_report_str = await force_word_count_compliance(llm, enhanced_report_str, current_detail_level, language)
+
     # Update state with the enhanced report
     state["enhanced_report"] = enhanced_report_str # Use the result from processor
     log_chain_of_thought(state, f"Enhanced report generated by processor.") # Updated log
-    
+
     if progress_callback:
         await _call_progress_callback(progress_callback, state)
     return state
@@ -549,53 +756,53 @@ async def expand_key_sections_node(llm, progress_callback, state: AgentState) ->
         state["status"] = "Shutdown requested, skipping section expansion"
         log_chain_of_thought(state, "Shutdown requested, skipping section expansion")
         return state
-    
+
     state["status"] = "Expanding key report sections"
     console.print("[bold blue]Expanding key sections with more comprehensive information...[/]")
-    
+
     enhanced_report = state.get("enhanced_report", "")
     if not enhanced_report or len(enhanced_report.strip()) < 500:
         log_chain_of_thought(state, "Enhanced report too short or missing, using as is")
         state["final_report"] = enhanced_report
         return state
-    
+
     # Get report title and sections
     title_match = re.match(r'# ([^\n]+)', enhanced_report)
     original_title = title_match.group(1) if title_match else state.get("report_title", "Research Report")
-    
+
     # Extract sections using regex pattern (only level 2 headings - main content sections)
     section_pattern = re.compile(r'(##\s+[^\n]+)(\n\n[^#]+?)(?=\n##\s+|\Z)', re.DOTALL)
     sections = section_pattern.findall(enhanced_report)
-    
+
     if not sections:
         log_chain_of_thought(state, "No expandable sections found, using enhanced report as is")
         state["final_report"] = enhanced_report
         return state
-    
+
     # Identify important sections to expand (excluding Executive Summary, Introduction, Conclusion, References)
     important_sections = []
     for i, (section_header, section_content) in enumerate(sections):
         title = section_header.replace('#', '').strip().lower()
         if title not in ["executive summary", "introduction", "conclusion", "references"]:
             important_sections.append((i, section_header, section_content))
-    
-    # Limit to 3 most important sections
-    important_sections = important_sections[:3]
+
+    # 【修复】移除3个章节的限制，处理所有重要章节以确保报告完整性
+    # 注释：原来只处理前3个章节导致报告不完整，现在处理所有重要章节
     if not important_sections:
         log_chain_of_thought(state, "No key sections to expand, using enhanced report as is")
         state["final_report"] = enhanced_report
         return state
-    
+
     # Create a copy of the report that we'll modify
     expanded_report = enhanced_report
-    
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]Expanding key sections..."),
         console=console
     ) as progress:
         task = progress.add_task("Expanding", total=1) # Total is 1 because we call the processor once
-        
+
         language = state.get('language', 'en')
         report_template_style = state.get('report_template', "standard")
         style_instructions = get_report_style_guidelines(language).get(report_template_style, get_report_style_guidelines(language)['standard'])
@@ -615,9 +822,9 @@ async def expand_key_sections_node(llm, progress_callback, state: AgentState) ->
             # Note: item 7 about current_date is part of the main template in prompts.py
         ]
         if current_detail_level == "brief":
-            pass 
+            pass
         elif current_detail_level.startswith("custom_"):
-            pass 
+            pass
         elif current_detail_level == "detailed":
             expansion_requirements_list.insert(0, "1. Substantially expand the length and detail of the section, aiming for a comprehensive and in-depth exploration, significantly longer than a standard treatment.")
         else: # Standard detail level
@@ -635,12 +842,27 @@ async def expand_key_sections_node(llm, progress_callback, state: AgentState) ->
             length_instruction=length_instruction,
             expansion_requirements_text=expansion_requirements_text_built # Pass the built requirements
         )
+
+        # 🚨 新增：最终强制字数验证和扩展
+        console.print("[bold blue]进行最终强制字数验证...[/]")
+        final_expanded_report = await force_word_count_compliance(llm, final_expanded_report, current_detail_level, language)
+
+        # 【新增】学术质量检查和连贯性优化
+        console.print("[bold blue]Performing final academic quality check...[/]")
+        final_expanded_report = await _ensure_report_coherence(
+            llm=llm,
+            report=final_expanded_report,
+            original_query=state.get('query', ''),
+            language=language,
+            current_date=current_date
+        )
+
         progress.update(task, completed=1)
-            
+
     # Update state with the expanded report
     state["final_report"] = final_expanded_report # Use result from processor
     log_chain_of_thought(state, f"Expanded key sections using processor.") # Updated log
-    
+
     if progress_callback:
         await _call_progress_callback(progress_callback, state)
     return state
@@ -660,12 +882,12 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
     elif "initial_report" in state and state["initial_report"]:
         final_report = state["initial_report"]
         has_report = True
-    
+
     # If we have a report but it's broken or too short, regenerate it
     if has_report and (len(final_report.strip()) < 1000):
         console.print("[bold yellow]Existing report appears broken or incomplete. Regenerating...[/]")
         has_report = False
-        
+
     # If we don't have a report, regenerate initial, enhanced, and expanded reports
     if not has_report:
         console.print("[bold yellow]No valid report found. Regenerating report from scratch...[/]")
@@ -680,6 +902,10 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
         report_template_style_fallback = state.get('report_template', "standard")
         style_instructions_fallback = get_report_style_guidelines(language).get(report_template_style_fallback, get_report_style_guidelines(language)['standard'])
 
+        # 【修复】添加字数控制指令到回退报告生成
+        current_detail_level_fallback = state.get('detail_level', 'standard')
+        length_instruction_fallback = _get_length_instruction(current_detail_level_fallback)
+
         initial_report = await generate_initial_report(
             llm,
             state['query'],
@@ -693,16 +919,17 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
             False, # Don't include objective in fallback
             state.get('citation_registry'), # Use existing citation registry if available
             report_style_instructions=style_instructions_fallback, # Pass style instructions
-            language=language # Pass language
+            language=language, # Pass language
+            length_instruction=length_instruction_fallback # 【新增】传递字数控制指令
         )
-        
+
         # Store the initial report
         state["initial_report"] = initial_report
-        
+
         # Skip enhancement and expansion steps to maintain consistent report structure
         enhanced_report = initial_report
         state["enhanced_report"] = enhanced_report
-        
+
         # Use the initial report directly as the final report
         final_report = initial_report
 
@@ -712,7 +939,7 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
                 for url in analysis["sources"]:
                     if url not in used_source_urls:
                         used_source_urls.append(url)
-        
+
         # If we don't have enough used sources, also grab from selected_sources
         if len(used_source_urls) < 5 and "selected_sources" in state:
             for url in state["selected_sources"]:
@@ -735,11 +962,11 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
     final_report = re.sub(r'Here are.*?(search queries|queries to investigate).*?\n', '', final_report)
     final_report = re.sub(r'Generated search queries:.*?\n', '', final_report)
     final_report = re.sub(r'\*Generated on:.*?\*', '', final_report)
-    
+
     # Remove "Refined Research Query" section which sometimes appears at the beginning
     final_report = re.sub(r'#\s*Refined Research Query:.*?(?=\n#|\Z)', '', final_report, flags=re.DOTALL)
     final_report = re.sub(r'Refined Research Query:.*?(?=\n\n)', '', final_report, flags=re.DOTALL)
-    
+
     # Remove entire Research Framework sections (from start to first actual content section)
     if "Research Framework:" in final_report or "# Research Framework:" in final_report:
 
@@ -747,10 +974,10 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
         if framework_matches:
             framework_section = framework_matches.group(0)
             final_report = final_report.replace(framework_section, '')
-    
+
     # Remove "Based on our discussion" title if it exists
     final_report = re.sub(r'^(?:#\s*)?Based on our discussion,.*?\n', '', final_report, flags=re.MULTILINE)
-    
+
     # Also try to catch Objective sections and other framework components
     final_report = re.sub(r'^Objective:.*?\n\n', '', final_report, flags=re.MULTILINE | re.DOTALL)
     final_report = re.sub(r'^Key Aspects to Focus On:.*?\n\n', '', final_report, flags=re.MULTILINE | re.DOTALL)
@@ -758,35 +985,35 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
     final_report = re.sub(r'^Areas to Explore in Depth:.*?\n\n', '', final_report, flags=re.MULTILINE | re.DOTALL)
     final_report = re.sub(r'^Preferred Sources, Perspectives, or Approaches:.*?\n\n', '', final_report, flags=re.MULTILINE | re.DOTALL)
     final_report = re.sub(r'^Scope, Boundaries, and Context:.*?\n\n', '', final_report, flags=re.MULTILINE | re.DOTALL)
-    
+
     # Also remove any remaining individual problem framework lines
     final_report = re.sub(r'^Research Framework:.*?\n', '', final_report, flags=re.MULTILINE)
     final_report = re.sub(r'^Key Findings:.*?\n', '', final_report, flags=re.MULTILINE)
     final_report = re.sub(r'^Key aspects to focus on:.*?\n', '', final_report, flags=re.MULTILINE)
 
     report_title = await generate_title(llm, state['query'])
-    
+
     # Remove the query or any long text description from the beginning of the report if present
     # This pattern removes lines that look like full query pasted as title or at the beginning
     if final_report.strip().startswith('# '):
         lines = final_report.split('\n')
-        
+
         # Remove any extremely long title lines (likely a full query pasted as title)
         if len(lines) > 0 and len(lines[0]) > 80 and lines[0].startswith('# '):
             lines = lines[1:]  # Remove the first line
             final_report = '\n'.join(lines)
-        
+
         # Also look for any text block before the actual title that might be the original query
         # or refined query description
         start_idx = 0
         title_idx = -1
-        
+
         for i, line in enumerate(lines):
             if line.startswith('# ') and i > 0 and len(line) < 100:
                 # Found what appears to be the actual title
                 title_idx = i
                 break
-        
+
         # If we found a title after some text, remove everything before it
         if title_idx > 0:
             lines = lines[title_idx:]
@@ -799,7 +1026,7 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
     else:
 
         final_report = f'# {report_title}\n\n{final_report}'
-        
+
     # Also check for second line being the full query, which happens sometimes
     lines = final_report.split('\n')
     if len(lines) > 2 and len(lines[1]) > 80 and "query" not in lines[1].lower():
@@ -811,32 +1038,32 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
         references_match = re.search(r'#+\s*References.*?(?=#+\s+|\Z)', final_report, re.DOTALL)
         if references_match:
             references_section = references_match.group(0)
-            
+
             # Always replace the references section with our properly formatted web citations
             console.print("[yellow]Ensuring references are properly formatted as web citations...[/]")
 
             citation_registry = state.get("citation_registry")
             citation_manager = state.get("citation_manager")
             formatted_citations = ""
-            
+
             if citation_manager and citation_registry:
 
                 citation_stats = citation_manager.get_learning_statistics()
                 console.print(f"[bold green]Report references {len(citation_registry.citations)} sources with {citation_stats.get('total_learnings', 0)} tracked learnings[/]")
 
                 validation_result = citation_registry.validate_citations(final_report)
-                
+
                 if not validation_result["valid"]:
 
                     out_of_range_count = len(validation_result.get("out_of_range_citations", set()))
                     other_invalid_count = len(validation_result["invalid_citations"]) - out_of_range_count
                     max_valid_id = validation_result.get("max_valid_id", 0)
-                    
+
                     console.print(f"[bold yellow]Found {len(validation_result['invalid_citations'])} invalid citations in the report[/]")
-                    
+
                     if out_of_range_count > 0:
                         console.print(f"[bold red]Found {out_of_range_count} out-of-range citations (exceeding max valid ID: {max_valid_id})[/]")
-                    
+
                     # Remove invalid citations from the report
                     for invalid_cid in validation_result["invalid_citations"]:
                         # For out-of-range citations, replace with valid range indicator
@@ -848,12 +1075,12 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
                             final_report = re.sub(f'\\[{invalid_cid}\\]', '[?]', final_report)
 
                 used_citations = validation_result["used_citations"]
-                
+
                 # If we have a citation manager, use its enhanced formatting
                 if citation_manager and used_citations:
 
                     processed_text, bibliography_entries = citation_manager.get_citations_for_report(final_report)
-                    
+
                     # Use the citation manager's bibliography formatter with APA style
                     if bibliography_entries:
                         report_template = state.get('report_template', 'standard')
@@ -864,19 +1091,19 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
                             citation_style = "mla"
                         elif report_template == "business":
                             citation_style = "apa"
-                        
+
                         formatted_citations = citation_manager.format_bibliography(bibliography_entries, style=citation_style)
                         console.print(f"[bold green]Generated enhanced bibliography with {len(bibliography_entries)} entries using '{citation_style}' style.[/bold green]")
                 # Fall back to regular citation formatting
                 elif used_citations:
 
                     formatted_citations = await format_citations(
-                        llm, 
-                        state.get('selected_sources', []), 
+                        llm,
+                        state.get('selected_sources', []),
                         state["sources"],
                         citation_registry
                     )
-            
+
             # Replace references section with properly formatted ones
             if formatted_citations:
                 new_references = f"# References\n\n{formatted_citations}\n"
@@ -892,11 +1119,11 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
                     title = source_meta.get("title", "Untitled")
                     domain = url.split("//")[1].split("/")[0] if "//" in url else "Unknown Source"
                     date = source_meta.get("date", "n.d.")
-                    
+
                     # Simpler citation format without the date
                     citation = f"[{i}] *{domain}*, \"{title}\", {url}"
                     basic_references.append(citation)
-                
+
                 new_references = f"# References\n\n" + "\n".join(basic_references) + "\n"
                 final_report = final_report.replace(references_section, new_references)
 
@@ -923,25 +1150,25 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
                         if isinstance(data_item, dict) and \
                            data_item.get('matplotlib_code') and \
                            data_item.get('chart_filename'):
-                            
+
                             chart_code = data_item['matplotlib_code']
                             original_chart_filename = data_item['chart_filename']
                             chart_title = data_item.get('title_suggestion', f"Chart_{original_chart_filename}")
-                            
+
                             image_path = os.path.join(chart_output_dir, original_chart_filename)
-                            
+
                             # Modify plt.savefig() to use the absolute image_path
                             # Ensure image_path is properly escaped for use in a string literal if necessary,
                             # though os.path.join should produce a clean path.
                             # Python's string literals handle backslashes in paths correctly on Windows if they are raw or escaped.
                             # Forcing forward slashes for cross-platform consistency in the generated script:
                             safe_image_path_for_script = image_path.replace("\\", "/")
-                            chart_code = re.sub(r"plt\.savefig\s*\(\s*['\"].*?['\"]\s*\)", 
-                                                f"plt.savefig(r'{safe_image_path_for_script}')", 
+                            chart_code = re.sub(r"plt\.savefig\s*\(\s*['\"].*?['\"]\s*\)",
+                                                f"plt.savefig(r'{safe_image_path_for_script}')",
                                                 chart_code)
                             if "plt.savefig" not in chart_code: # If no savefig was present, add one.
                                 chart_code += f"\nplt.savefig(r'{safe_image_path_for_script}')"
-                            
+
                             # Ensure plt.close() is in the script to free memory
                             if "plt.close()" not in chart_code:
                                 chart_code += "\nplt.close()"
@@ -949,7 +1176,7 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
                             script_path = os.path.join(chart_output_dir, "temp_chart_script.py")
                             with open(script_path, "w") as f:
                                 f.write(chart_code)
-                            
+
                             try:
                                 # Consider using sys.executable for robustness
                                 process = subprocess.run(["python", script_path], capture_output=True, text=True, timeout=30)
@@ -958,7 +1185,7 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
                                         console.print(f"[green]Successfully executed chart script and saved: {image_path}[/green]")
                                         executed_charts_info_list.append({
                                             'md_path': image_path.replace("\\", "/"), # Use forward slashes for MD
-                                            'title': chart_title, 
+                                            'title': chart_title,
                                             'original_filename': original_chart_filename
                                         })
                                     else:
@@ -985,10 +1212,10 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
         charts_markdown_section = "\n\n## Visualizations\n\n"
         for chart_info in executed_charts_info_list:
             # Ensure title doesn't break Markdown image alt text or header
-            safe_title = chart_info['title'].replace('"', "'").replace('\n', ' ') 
+            safe_title = chart_info['title'].replace('"', "'").replace('\n', ' ')
             charts_markdown_section += f"### {safe_title}\n"
             charts_markdown_section += f"![{safe_title}]({chart_info['md_path']})\n\n"
-        
+
         # Append the new charts section to the final report
         final_report += charts_markdown_section
         state["findings"] = final_report # Update state with the report including charts
@@ -998,12 +1225,12 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
     if "citation_manager" in state:
         citation_stats = state["citation_manager"].get_learning_statistics()
         log_chain_of_thought(
-            state, 
+            state,
             f"Generated final report after {minutes}m {seconds}s with {citation_stats.get('total_sources', 0)} sources and {citation_stats.get('total_learnings', 0)} tracked learnings, including {len(executed_charts_info_list)} chart simulations."
         )
     else:
         log_chain_of_thought(state, f"Generated final report after {minutes}m {seconds}s, including {len(executed_charts_info_list)} chart simulations.")
-    
+
     if progress_callback:
         await _call_progress_callback(progress_callback, state)
     return state

@@ -88,7 +88,10 @@ async def is_relevant_url(llm: ChatOpenAI, url: str, title: str, snippet: str, q
     safe_query = query.replace("{", "{{").replace("}", "}}")
     
     # Use structured output for relevance check
-    structured_llm = llm.with_structured_output(UrlRelevanceResult, method="function_calling")
+    try:
+        structured_llm = llm.with_structured_output(UrlRelevanceResult, method="json_mode")
+    except Exception:
+        structured_llm = llm.with_structured_output(UrlRelevanceResult, method="function_calling")
     system_prompt = (
         "You are evaluating search results for relevance to a specific query.\n\n"
         "DETERMINE if the search result is RELEVANT or NOT RELEVANT to answering the query.\n"
@@ -237,7 +240,10 @@ async def process_scraped_item(llm: ChatOpenAI, item: ScrapedContent, subquery: 
     safe_title = item.title.replace("{", "{{").replace("}", "}}")
     safe_subquery = subquery.replace("{", "{{").replace("}", "}}")
     
-    structured_llm = llm.with_structured_output(ContentRating, method="function_calling")
+    try:
+        structured_llm = llm.with_structured_output(ContentRating, method="json_mode")
+    except Exception:
+        structured_llm = llm.with_structured_output(ContentRating, method="function_calling")
     system_prompt_text = ( # Renamed to avoid conflict in case 'system_prompt' is used elsewhere
         "You are analyzing web content for reliability and extracting the most relevant information.\n\n"
         "Evaluate the RELIABILITY of the content using these criteria:\n"
@@ -422,7 +428,12 @@ async def analyze_content(llm: ChatOpenAI, subquery: str, content_text: str) -> 
     """
     Analyze content from multiple sources and synthesize the information using structured output.
     """
-    structured_llm_instance = llm.with_structured_output(ContentAnalysis) # Renamed instance
+    # Try JSON mode first, then fallback to function calling if needed
+    try:
+        structured_llm_instance = llm.with_structured_output(ContentAnalysis, method="json_mode")
+    except Exception:
+        # Fallback to function calling method
+        structured_llm_instance = llm.with_structured_output(ContentAnalysis, method="function_calling")
     
     # Original system and user message definitions
     system_prompt_text = ( # Renamed
@@ -433,7 +444,14 @@ async def analyze_content(llm: ChatOpenAI, subquery: str, content_text: str) -> 
         "3. Organize the information into a coherent analysis\n"
         "4. Evaluate the credibility and relevance of the sources\n"
         "5. Maintain source attributions when presenting facts or claims\n\n"
-        "Create a thorough, well-structured analysis that captures the most valuable insights.\n"
+        "Create a thorough, well-structured analysis that captures the most valuable insights.\n\n"
+        "IMPORTANT: You must respond with a valid JSON object that matches this exact structure:\n"
+        "{{\n"
+        "  \"key_findings\": [\"finding1\", \"finding2\", ...],\n"
+        "  \"main_themes\": [\"theme1\", \"theme2\", ...],\n"
+        "  \"analysis\": \"comprehensive analysis text\",\n"
+        "  \"source_evaluation\": \"evaluation of sources text\"\n"
+        "}}\n"
     )
     user_message_text = ( # Renamed
         f"Analyze the following content related to the query: \"{subquery}\"\n\n"
@@ -455,18 +473,49 @@ async def analyze_content(llm: ChatOpenAI, subquery: str, content_text: str) -> 
     mapping = {"query": subquery, "input": content_text} # 'input' is a common key for LangChain invoke.
 
     try:
-        chain = original_prompt_template | structured_llm_instance.with_config({"timeout": 180})
+        chain = original_prompt_template | structured_llm_instance.with_config({"timeout": 180, "max_tokens": 4096})
         result = await chain.ainvoke(mapping)
-        
-        formatted_analysis = "### Key Findings\n\n"
-        for i, finding in enumerate(result.key_findings, 1):
-            formatted_analysis += f"{i}. {finding}\n"
-        formatted_analysis += "\n### Main Themes\n\n"
-        for i, theme in enumerate(result.main_themes, 1):
-            formatted_analysis += f"{i}. {theme}\n"
-        formatted_analysis += f"\n### Analysis\n\n{result.analysis}\n"
-        formatted_analysis += f"\n### Source Evaluation\n\n{result.source_evaluation}\n"
-        return formatted_analysis
+
+        # Check if result has the expected attributes
+        if hasattr(result, 'key_findings') and hasattr(result, 'main_themes') and hasattr(result, 'analysis') and hasattr(result, 'source_evaluation'):
+            formatted_analysis = "### Key Findings\n\n"
+            for i, finding in enumerate(result.key_findings, 1):
+                formatted_analysis += f"{i}. {finding}\n"
+            formatted_analysis += "\n### Main Themes\n\n"
+            for i, theme in enumerate(result.main_themes, 1):
+                formatted_analysis += f"{i}. {theme}\n"
+            formatted_analysis += f"\n### Analysis\n\n{result.analysis}\n"
+            formatted_analysis += f"\n### Source Evaluation\n\n{result.source_evaluation}\n"
+            return formatted_analysis
+        else:
+            # If result doesn't have expected structure, try to parse as dict or JSON
+            if hasattr(result, 'content'):
+                content = result.content
+            elif isinstance(result, dict):
+                content = result
+            else:
+                content = str(result)
+
+            # Try to parse as JSON if it's a string
+            if isinstance(content, str):
+                try:
+                    parsed_content = json.loads(content)
+                    if all(key in parsed_content for key in ['key_findings', 'main_themes', 'analysis', 'source_evaluation']):
+                        validated_result = ContentAnalysis(**parsed_content)
+                        formatted_analysis = "### Key Findings\n\n"
+                        for i, finding in enumerate(validated_result.key_findings, 1):
+                            formatted_analysis += f"{i}. {finding}\n"
+                        formatted_analysis += "\n### Main Themes\n\n"
+                        for i, theme in enumerate(validated_result.main_themes, 1):
+                            formatted_analysis += f"{i}. {theme}\n"
+                        formatted_analysis += f"\n### Analysis\n\n{validated_result.analysis}\n"
+                        formatted_analysis += f"\n### Source Evaluation\n\n{validated_result.source_evaluation}\n"
+                        return formatted_analysis
+                except json.JSONDecodeError:
+                    pass
+
+            # If all parsing attempts fail, raise an exception to trigger fallback
+            raise ValueError(f"Unexpected result structure: {type(result)}")
     except Exception as e:
         from ...utils.logger import log_error
 
@@ -490,31 +539,53 @@ async def analyze_content(llm: ChatOpenAI, subquery: str, content_text: str) -> 
         if raw_content_for_logging != "Could not retrieve raw content for logging diagnostic" and not isinstance(raw_content_for_logging, Exception):
              console.print(f"[dim yellow]Diagnostic raw content preview (Attempt 1): '{raw_content_for_logging[:200]}...'[/dim yellow]")
         
-        # New Attempt (Second attempt with modified prompt)
+        # New Attempt (Second attempt with direct JSON parsing)
         try:
-            console.print(f"[dim blue]Retrying content analysis for query '{subquery}' with explicit JSON prompt...[/dim blue]")
+            console.print(f"[dim blue]Retrying content analysis for query '{subquery}' with direct JSON parsing...[/dim blue]")
+
+            # Try using the base LLM with explicit JSON instructions
             retry_system_prompt_text = (
                 "You are analyzing and synthesizing information from multiple web sources.\n\n"
                 "Your task is to:\n"
                 "1. Identify key findings and main themes related to the query.\n"
-                "2. Provide a coherent analysis and evaluate source credibility.\n"
-                "IMPORTANT: Your output MUST be a valid JSON object matching the Pydantic model structure provided by the system.\n"
-                "The structure is: class ContentAnalysis(BaseModel):\n"
-                "    key_findings: List[str]\n"
-                "    main_themes: List[str]\n"
-                "    analysis: str\n"
-                "    source_evaluation: str\n\n"
-                "If you cannot provide a valid response, return JSON like: "
-                "{\"key_findings\": [\"Error: Analysis failed\"], \"main_themes\": [], \"analysis\": \"Could not perform analysis due to [issue].\", \"source_evaluation\": \"N/A\"}."
+                "2. Provide a coherent analysis and evaluate source credibility.\n\n"
+                "CRITICAL: You MUST respond with ONLY a valid JSON object. No other text before or after.\n"
+                "The JSON must have this exact structure:\n"
+                "{{\n"
+                "  \"key_findings\": [\"finding1\", \"finding2\", \"finding3\"],\n"
+                "  \"main_themes\": [\"theme1\", \"theme2\", \"theme3\"],\n"
+                "  \"analysis\": \"Your comprehensive analysis here\",\n"
+                "  \"source_evaluation\": \"Your source evaluation here\"\n"
+                "}}\n\n"
+                "If you cannot analyze the content, return:\n"
+                "{{\"key_findings\": [\"Error: Analysis failed\"], \"main_themes\": [], \"analysis\": \"Could not perform analysis due to technical issues.\", \"source_evaluation\": \"N/A\"}}"
             )
             # user_message_escaped is from the outer scope
             retry_prompt_template = ChatPromptTemplate.from_messages([
                 {"role": "system", "content": retry_system_prompt_text}, # Note: Escaping not strictly needed here as it's a fixed string.
-                {"role": "user", "content": user_message_escaped} 
+                {"role": "user", "content": user_message_escaped}
             ])
-            
-            retry_chain = retry_prompt_template | structured_llm_instance.with_config({"timeout": 180})
-            result = await retry_chain.ainvoke(mapping) # Use the same mapping
+
+            # Use base LLM with StrOutputParser for direct JSON response
+            retry_chain = retry_prompt_template | llm.with_config({"timeout": 180, "max_tokens": 4096}) | StrOutputParser()
+            raw_response = await retry_chain.ainvoke(mapping) # Use the same mapping
+
+            # Parse the JSON response
+            try:
+                # Clean up the response (remove any markdown formatting)
+                cleaned_response = raw_response.strip()
+                if cleaned_response.startswith("```json"):
+                    cleaned_response = cleaned_response[7:]
+                if cleaned_response.endswith("```"):
+                    cleaned_response = cleaned_response[:-3]
+                cleaned_response = cleaned_response.strip()
+
+                parsed_json = json.loads(cleaned_response)
+                result = ContentAnalysis(**parsed_json)
+            except (json.JSONDecodeError, Exception) as parse_error:
+                console.print(f"[dim red]Failed to parse JSON response: {parse_error}[/dim red]")
+                console.print(f"[dim yellow]Raw response: {raw_response[:200]}...[/dim yellow]")
+                raise ValueError(f"Failed to parse JSON response: {parse_error}")
             
             console.print(f"[dim green]Successfully analyzed content for query '{subquery}' with retry prompt.[/dim green]")
             # Format the result as in the original try block

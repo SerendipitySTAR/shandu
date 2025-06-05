@@ -40,13 +40,16 @@ Requirements:
 2. Queries should be natural and conversational (like what someone would type in Google)
 3. Each query should target specific facts, data points, or perspectives
 4. Keep queries direct and concise - avoid complex academic phrasing
+5. **CRITICAL**: All queries MUST be directly related to the main query topic. Do NOT generate queries about unrelated topics.
+6. **FOCUS**: Stay strictly within the scope of the original research question.
 
 Today's date: {state['current_date']}
 
-Current Research Findings:
+Current Research Findings (for context only - do not deviate from main topic):
 {state['findings'][:2000]}
 
 Return ONLY the search queries themselves, one per line, with no additional text, numbering, or explanation.
+Each query must be directly related to: {state['query']}
 """
         # Send the prompt directly to the model
         response = await llm.ainvoke(direct_prompt)
@@ -58,8 +61,19 @@ Return ONLY the search queries themselves, one per line, with no additional text
         new_queries = [re.sub(r'^(here are|i will|i\'ll|let me|these are|i recommend|completed:|search for:).*?:', '', line, flags=re.IGNORECASE).strip() for line in new_queries]
         # Filter out any empty lines or lines that don't look like actual queries
         new_queries = [q for q in new_queries if q and len(q.split()) >= 2 and not q.lower().startswith(("query", "search", "investigate", "explore", "research"))]
-        # Limit to the specified breadth
-        new_queries = new_queries[:state["breadth"]]
+
+        # 【新增】主题一致性检查 - 过滤掉与原始查询不相关的查询
+        original_query_keywords = set(state['query'].lower().split())
+        filtered_queries = []
+        for query in new_queries:
+            query_keywords = set(query.lower().split())
+            # 检查是否有共同关键词或相关性
+            if original_query_keywords.intersection(query_keywords) or any(keyword in query.lower() for keyword in original_query_keywords):
+                filtered_queries.append(query)
+            else:
+                console.print(f"[yellow]Filtered out unrelated query: {query}[/]")
+
+        new_queries = filtered_queries[:state["breadth"]]
         
         log_chain_of_thought(state, f"Generated {len(new_queries)} search queries for investigation")
         

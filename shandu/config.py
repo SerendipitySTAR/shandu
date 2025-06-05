@@ -7,17 +7,21 @@ import datetime
 
 DEFAULT_CONFIG = {
     "api": {
-        "base_url": "https://api.openai.com/v1",
-        "api_key": "",
-        "model": "gpt-4",
-        "temperature": 0
+        "base_url": "http://localhost:8321/v1",
+        "api_key": "sctest",
+        "model": "gpt-4o-2024-08-06",
+        "temperature": 0.6,
+        "max_tokens": 131072,
     },
     "search": {
-        "engines": ["duckduckgo", "google"],
-        "max_results": 10,
+        "engines": ["duckduckgo", "wikipedia", "bing"],  # Removed google as default to avoid rate limits
+        "max_results": 8,  # Reduced to be more conservative
         "region": "wt-wt",
         "safesearch": "moderate",
-        "user_agent": "ShanduResearchAgent/1.0"
+        "user_agent": "ShanduResearchAgent/1.0",
+        "google_rate_limit_delay": 3.0,  # Minimum delay between Google searches
+        "max_retries": 3,  # Maximum retry attempts for failed searches
+        "enable_google_fallback": False  # Only use Google as last resort
     },
     "research": {
         "default_depth": 2,

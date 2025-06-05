@@ -68,10 +68,10 @@ async def search_node(llm, searcher, scraper, progress_callback, state: AgentSta
         
         # Search for the query using multiple engines for better results
         try:
-            # Use multiple engines in parallel for more diverse results
-            engines = ["google", "duckduckgo"]  # Using primary engines 
-            if query_idx % 2 == 0:  # Add Wikipedia for every other query
-                engines.append("wikipedia")
+            # Use more reliable engines first, avoid Google to prevent rate limiting
+            engines = ["duckduckgo", "wikipedia"]  # Using stable engines
+            if query_idx % 3 == 0:  # Add Bing occasionally for diversity
+                engines.append("bing")
             
             search_results = await searcher.search(query, engines=engines)
             if not search_results:

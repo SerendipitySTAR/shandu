@@ -61,11 +61,11 @@ class SearchResult:
 
 class UnifiedSearcher:
     """Unified search engine that can use multiple search engines with improved parallelism and caching."""
-    
+
     def __init__(self, max_results: int = 10, cache_enabled: bool = CACHE_ENABLED, cache_ttl: int = CACHE_TTL):
         """
         Initialize the unified searcher.
-        
+
         Args:
             max_results: Maximum number of results to return per engine
             cache_enabled: Whether to use caching for search results
@@ -73,19 +73,55 @@ class UnifiedSearcher:
         """
         self.max_results = max_results
         self.user_agent = get_user_agent() # Use the centralized getter
-        self.default_engine = "google"  # Set a default engine
+        self.default_engine = "duckduckgo"  # Changed default to more reliable engine
         self.cache_enabled = cache_enabled
         self.cache_ttl = cache_ttl
         self.in_progress_queries: Set[str] = set()  # Track queries being processed to prevent duplicates
         self._semaphores = {}  # Dictionary to store semaphores for each event loop
         self._semaphore_lock = asyncio.Lock()  # Lock for thread-safe access to semaphores
+
+        # Rate limiting tracking
+        self._last_google_search = 0
+        self._google_search_count = 0
+        self._google_rate_limit_delay = 3.0  # Minimum delay between Google searches
+        self._failed_engines = set()  # Track engines that have failed recently
+
+    def _should_skip_google(self) -> bool:
+        """Check if Google search should be skipped due to rate limiting."""
+        current_time = time.time()
+
+        # Skip if Google has failed recently
+        if "google" in self._failed_engines:
+            return True
+
+        # Check rate limiting
+        time_since_last = current_time - self._last_google_search
+        if time_since_last < self._google_rate_limit_delay:
+            logger.info(f"Skipping Google search due to rate limit (last search {time_since_last:.1f}s ago)")
+            return True
+
+        return False
+
+    def _mark_engine_failed(self, engine: str) -> None:
+        """Mark an engine as failed to avoid using it temporarily."""
+        self._failed_engines.add(engine)
+        logger.warning(f"Marked {engine} as failed, will avoid for this session")
+
+    def _mark_google_search(self) -> None:
+        """Record a Google search for rate limiting purposes."""
+        self._last_google_search = time.time()
+        self._google_search_count += 1
     
     async def _check_cache(self, query: str, engine: str) -> Optional[List[SearchResult]]:
         """Check if search results are available in cache and not expired."""
         if not self.cache_enabled:
             return None
-            
-        cache_key = f"{engine}_{query}".replace(" ", "_").replace("/", "_").replace(".", "_")
+
+        # 改进缓存键生成，添加更多字符替换以避免冲突
+        import hashlib
+        # 使用哈希来避免文件名过长和特殊字符问题
+        query_hash = hashlib.md5(query.encode('utf-8')).hexdigest()[:16]
+        cache_key = f"{engine}_{query_hash}"
         cache_path = os.path.join(CACHE_DIR, f"{cache_key}.json")
         
         if not os.path.exists(cache_path):
@@ -117,8 +153,11 @@ class UnifiedSearcher:
         """Save search results to cache."""
         if not self.cache_enabled or not results:
             return False
-            
-        cache_key = f"{engine}_{query}".replace(" ", "_").replace("/", "_").replace(".", "_")
+
+        # 使用与_check_cache相同的哈希逻辑
+        import hashlib
+        query_hash = hashlib.md5(query.encode('utf-8')).hexdigest()[:16]
+        cache_key = f"{engine}_{query_hash}"
         cache_path = os.path.join(CACHE_DIR, f"{cache_key}.json")
         
         try:
@@ -134,42 +173,70 @@ class UnifiedSearcher:
     
     async def search(self, query: str, engines: Optional[List[str]] = None, force_refresh: bool = False) -> List[SearchResult]:
         """
-        Search for a query using multiple engines.
-        
+        Search for a query using multiple engines with improved fallback strategy.
+
         Args:
             query: Query to search for
-            engines: List of engines to use (google, duckduckgo, bing, etc.)
+            engines: List of engines to use (duckduckgo, google, bing, wikipedia)
             force_refresh: Whether to ignore cache and force fresh searches
-        
+
         Returns:
             List of search results
         """
         if engines is None:
-            engines = ["google"]
+            # Default to more reliable engines first, Google as fallback
+            engines = ["duckduckgo", "wikipedia"]
 
         if isinstance(engines, str):
             engines = [engines]
-        
+
         # Use set to ensure unique engine names (case insensitive)
         unique_engines = set(engine.lower() for engine in engines)
 
-        tasks = []
+        # Reorder engines to prioritize more reliable ones
+        engine_priority = ["duckduckgo", "wikipedia", "bing", "google"]
+        ordered_engines = []
+        for priority_engine in engine_priority:
+            if priority_engine in unique_engines:
+                ordered_engines.append(priority_engine)
+
+        # Add any remaining engines not in priority list
         for engine in unique_engines:
+            if engine not in ordered_engines:
+                ordered_engines.append(engine)
+
+        tasks = []
+        successful_engines = []
+
+        # Try engines in priority order, with fallback strategy
+        for engine in ordered_engines:
             # Skip unsupported engines
             if engine not in ["google", "duckduckgo", "bing", "wikipedia"]:
                 logger.warning(f"Unknown search engine: {engine}")
                 continue
-                
+
+            # Skip failed engines
+            if engine in self._failed_engines:
+                logger.info(f"Skipping {engine} as it has failed recently")
+                continue
+
+            # Special handling for Google rate limiting
+            if engine == "google" and self._should_skip_google():
+                logger.info(f"Skipping Google search due to rate limiting")
+                continue
+
             # First check cache unless forcing refresh
             if not force_refresh:
                 cached_results = await self._check_cache(query, engine)
                 if cached_results:
                     logger.info(f"Using cached results for {query} on {engine}")
                     tasks.append(asyncio.create_task(asyncio.sleep(0, result=cached_results)))
+                    successful_engines.append(engine)
                     continue
-            
+
             # Execute search with appropriate engine method
             if engine == "google":
+                self._mark_google_search()  # Record the search attempt
                 tasks.append(self._search_with_retry(self._search_google, query))
             elif engine == "duckduckgo":
                 tasks.append(self._search_with_retry(self._search_duckduckgo, query))
@@ -177,15 +244,42 @@ class UnifiedSearcher:
                 tasks.append(self._search_with_retry(self._search_bing, query))
             elif engine == "wikipedia":
                 tasks.append(self._search_with_retry(self._search_wikipedia, query))
+
+            successful_engines.append(engine)
         
+        # If no tasks were created (all engines skipped), try fallback
+        if not tasks:
+            logger.warning("All search engines were skipped, trying fallback strategy")
+            # Try Wikipedia as a last resort since it's most reliable
+            if "wikipedia" not in self._failed_engines:
+                try:
+                    fallback_results = await self._search_with_retry(self._search_wikipedia, query)
+                    if fallback_results:
+                        logger.info("Fallback Wikipedia search succeeded")
+                        return fallback_results
+                except Exception as e:
+                    logger.error(f"Fallback Wikipedia search failed: {e}")
+
+            # If all else fails, return empty results with a helpful message
+            logger.error("All search engines failed or were skipped. Consider checking network connectivity.")
+            return []
+
         # Run all tasks concurrently
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         # Flatten results and filter out exceptions
         all_results = []
-        for result in results:
+        failed_count = 0
+        for i, result in enumerate(results):
             if isinstance(result, Exception):
-                logger.error(f"Error during search: {result}")
+                failed_count += 1
+                engine_name = successful_engines[i] if i < len(successful_engines) else "unknown"
+                logger.error(f"Error during {engine_name} search: {result}")
+
+                # Mark engine as failed if it's a persistent error
+                if "429" in str(result).lower() or "too many requests" in str(result).lower():
+                    if engine_name == "google":
+                        self._mark_engine_failed("google")
             else:
                 all_results.extend(result)
 
@@ -203,70 +297,133 @@ class UnifiedSearcher:
         # Limit to max_results
         return unique_results[:self.max_results]
     
-    async def _search_with_retry(self, search_function, query: str, max_retries: int = 2) -> List[SearchResult]:
-        """Wrapper that adds retry logic to search functions."""
+    async def _search_with_retry(self, search_function, query: str, max_retries: int = 3) -> List[SearchResult]:
+        """Wrapper that adds retry logic to search functions with enhanced error handling."""
         retries = 0
         engine_name = search_function.__name__.replace("_search_", "")
-        
+
         while retries <= max_retries:
             try:
-
+                # Enhanced backoff strategy for retries
                 if retries > 0:
-                    delay = random.uniform(1.0, 3.0) * retries
+                    # Exponential backoff with jitter for 429 errors
+                    base_delay = 2 ** retries  # 2, 4, 8 seconds
+                    jitter = random.uniform(0.5, 1.5)
+                    delay = base_delay * jitter
+
+                    # Extra delay for Google searches to avoid rate limiting
+                    if engine_name == "google":
+                        delay *= 2  # Double the delay for Google
+
+                    logger.info(f"Retry {retries} for {engine_name}, waiting {delay:.1f}s")
                     await asyncio.sleep(delay)
 
                 semaphore = await self._get_semaphore()
-                
+
                 # Acquire semaphore to limit concurrent searches
                 async with semaphore:
+                    # Longer delay for Google searches to respect rate limits
+                    if engine_name == "google":
+                        await asyncio.sleep(random.uniform(1.0, 2.0))
+                    else:
+                        await asyncio.sleep(random.uniform(0.1, 0.5))
 
-                    await asyncio.sleep(random.uniform(0.1, 0.5))
-                    
                     # Execute the search
                     results = await search_function(query)
-                    
+
                     # Cache successful results
                     if results:
                         await self._save_to_cache(query, engine_name, results)
-                        
+
                     return results
-                    
+
             except Exception as e:
-                logger.warning(f"Search attempt {retries + 1} failed for {engine_name}: {e}")
+                error_str = str(e).lower()
+
+                # Special handling for 429 errors
+                if "429" in error_str or "too many requests" in error_str:
+                    logger.warning(f"Rate limit hit for {engine_name} (attempt {retries + 1}): {e}")
+
+                    # Mark Google as failed if it hits rate limits repeatedly
+                    if engine_name == "google" and retries >= 1:
+                        self._mark_engine_failed("google")
+                        logger.warning("Marking Google as failed due to repeated rate limits")
+                        return []  # Don't retry Google if it's rate limited
+
+                    # Longer delay for rate limit errors
+                    if retries < max_retries:
+                        delay = (2 ** (retries + 2)) * random.uniform(1.5, 2.5)  # 6-20 seconds
+                        logger.info(f"Rate limit backoff: waiting {delay:.1f}s before retry")
+                        await asyncio.sleep(delay)
+                else:
+                    logger.warning(f"Search attempt {retries + 1} failed for {engine_name}: {e}")
+
                 retries += 1
                 if retries > max_retries:
                     logger.error(f"All {max_retries + 1} attempts failed for {engine_name} search: {e}")
+
+                    # Mark engine as failed if all retries exhausted
+                    if engine_name == "google":
+                        self._mark_engine_failed("google")
+
                     return []
     
     async def _search_google(self, query: str) -> List[SearchResult]:
         """
-        Search Google for a query.
-        
+        Search Google for a query with enhanced error handling.
+
         Args:
             query: Query to search for
-            
+
         Returns:
             List of search results
         """
         try:
-            # Use googlesearch-python library
-            results = []
-            google_results = list(google_search(query, num_results=self.max_results))
-            for j in google_results:
+            # Add delay before Google search to respect rate limits
+            await asyncio.sleep(random.uniform(1.0, 2.0))
 
-                result = SearchResult(
-                    url=j,
-                    title=j,  # We don't have titles from this library
-                    snippet="",  # We don't have snippets from this library
-                    source="Google"
-                )
-                results.append(result)
-            
-            # Try to get titles and snippets
-            if results:
-                await self._enrich_google_results(results, query)
-            
+            # Use googlesearch-python library with conservative settings
+            results = []
+
+            # Limit results to reduce API calls
+            limited_results = min(self.max_results, 5)  # Reduce load on Google
+
+            try:
+                google_results = list(google_search(
+                    query,
+                    num_results=limited_results,
+                    sleep_interval=2,  # Add sleep between requests
+                    lang='zh-cn'  # Specify language to reduce ambiguity
+                ))
+
+                for j in google_results:
+                    result = SearchResult(
+                        url=j,
+                        title=j,  # We don't have titles from this library
+                        snippet="",  # We don't have snippets from this library
+                        source="Google"
+                    )
+                    results.append(result)
+
+                # Try to get titles and snippets (but don't fail if this fails)
+                if results:
+                    try:
+                        await self._enrich_google_results(results, query)
+                    except Exception as enrich_error:
+                        logger.warning(f"Failed to enrich Google results: {enrich_error}")
+                        # Continue with basic results
+
+            except Exception as search_error:
+                error_str = str(search_error).lower()
+                if "429" in error_str or "too many requests" in error_str:
+                    logger.warning(f"Google rate limit hit: {search_error}")
+                    raise  # Let retry mechanism handle this
+                else:
+                    logger.error(f"Google search failed: {search_error}")
+                    raise
+
             return results
+
         except Exception as e:
             logger.error(f"Error during Google search: {e}")
             raise  # Re-raise for retry mechanism
@@ -535,7 +692,8 @@ class UnifiedSearcher:
                 if loop_id in self._semaphores:
                     return self._semaphores[loop_id]
 
-                semaphore = asyncio.Semaphore(5)  # Limit to 5 concurrent requests
+                # Reduce concurrent requests to be more conservative
+                semaphore = asyncio.Semaphore(2)  # Limit to 2 concurrent requests
                 self._semaphores[loop_id] = semaphore
                 return semaphore
                 
