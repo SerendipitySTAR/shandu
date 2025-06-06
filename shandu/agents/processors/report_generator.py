@@ -1212,172 +1212,139 @@ async def expand_short_sections(
 
     return expanded_content
 
+async def advanced_iterative_expansion(
+    llm: ChatOpenAI,
+    report_content: str,
+    target_chars: int,
+    max_iterations: int = 5,
+    language: str = "zh"
+) -> str:
+    """优化的迭代扩展算法，通过分段扩展确保达到目标字数"""
+
+    current_content = report_content
+
+    for iteration in range(max_iterations):
+        current_chars = count_chinese_and_english_chars(current_content)
+        print(f"🔄 迭代 {iteration + 1}/{max_iterations}: 当前字数 {current_chars}")
+
+        if current_chars >= target_chars:
+            print(f"✅ 已达到目标字数: {current_chars} >= {target_chars}")
+            return current_content
+
+        needed_chars = target_chars - current_chars
+        completion_ratio = current_chars / target_chars
+
+        print(f"📊 需要增加: {needed_chars} 字 (完成度: {completion_ratio:.1%})")
+
+        # 构建简化的扩展提示
+        expansion_prompt = f"""请将以下报告扩展到至少 {target_chars} 字。当前字数为 {current_chars} 字，需要增加 {needed_chars} 字。
+
+扩展要求：
+1. 保持原有结构和逻辑
+2. 大幅扩展每个段落的内容深度
+3. 添加更多详细的分析、例证和论述
+4. 确保学术质量和连贯性
+5. 每个主要章节至少2500字
+6. 每个段落至少200字
+
+当前报告内容：
+{current_content}
+
+请生成扩展后的完整报告，确保达到 {target_chars} 字的要求："""
+
+        try:
+            # 使用较高的max_tokens确保能生成足够内容
+            expand_llm = llm.with_config({"max_tokens": 120000, "temperature": 0.5})
+            response = await expand_llm.ainvoke(expansion_prompt)
+            expanded_content = response.content.strip()
+
+            # 验证扩展效果
+            expanded_chars = count_chinese_and_english_chars(expanded_content)
+
+            if expanded_chars > current_chars:
+                improvement = expanded_chars - current_chars
+                current_content = expanded_content
+                print(f"✅ 扩展成功: +{improvement} 字")
+
+                # 如果接近目标，可以提前结束
+                if expanded_chars >= target_chars * 0.95:
+                    print(f"🎯 接近目标字数，提前结束")
+                    break
+            else:
+                print(f"⚠️ 扩展失败，字数未增加")
+                # 如果连续失败，尝试不同的提示策略
+                if iteration >= 2:
+                    print(f"🔄 尝试强制扩展策略...")
+                    force_prompt = f"""🚨 强制扩展要求：必须将以下报告扩展到至少 {target_chars} 字！
+
+当前字数：{current_chars} 字
+目标字数：{target_chars} 字
+必须增加：{needed_chars} 字
+
+强制要求：
+- 每个现有段落必须扩展至少300字
+- 每个章节必须添加2-3个新的子章节
+- 必须包含大量具体案例和详细分析
+- 绝对不能少于{target_chars}字
+
+当前内容：
+{current_content}
+
+立即生成扩展后的完整报告："""
+
+                    force_response = await expand_llm.ainvoke(force_prompt)
+                    force_expanded = force_response.content.strip()
+                    force_chars = count_chinese_and_english_chars(force_expanded)
+
+                    if force_chars > current_chars:
+                        current_content = force_expanded
+                        print(f"✅ 强制扩展成功: +{force_chars - current_chars} 字")
+                    else:
+                        print(f"❌ 强制扩展也失败")
+                        break
+
+        except Exception as e:
+            print(f"❌ 扩展过程出错: {e}")
+            break
+
+    final_chars = count_chinese_and_english_chars(current_content)
+    print(f"📊 迭代扩展完成，最终字数: {final_chars}")
+    return current_content
+
+
+
 async def force_word_count_compliance(
     llm: ChatOpenAI,
     report_content: str,
     detail_level: str,
     language: str = "zh"
 ) -> str:
-    """强制确保报告达到字数要求，特别针对大纲式报告进行深度转化"""
+    """强制确保报告达到字数要求，使用优化的迭代扩展算法"""
     requirements = get_word_count_requirements(detail_level)
-    current_word_count = len(report_content)
+    current_word_count = count_chinese_and_english_chars(report_content)
 
     if current_word_count >= requirements['total_min']:
         print(f"✅ 报告字数已达标：{current_word_count} >= {requirements['total_min']}")
         return report_content
 
-    print(f"🚨 报告字数严重不足：{current_word_count} < {requirements['total_min']}，开始强制深度扩展...")
+    print(f"🚨 报告字数严重不足：{current_word_count} < {requirements['total_min']}，启动优化迭代扩展...")
 
-    # 计算需要增加的字数
-    needed_words = requirements['total_target'] - current_word_count
-
-    # 检查是否是大纲式内容（降低阈值，更敏感地检测）
-    is_outline_style = (
-        report_content.count('- ') > 5 or   # 列表项
-        report_content.count('•') > 3 or    # 项目符号
-        report_content.count('\n1.') > 2 or # 编号列表
-        report_content.count('\n2.') > 2 or
-        report_content.count('\n3.') > 1    # 更多编号
+    # 使用优化的迭代扩展算法
+    expanded_report = await advanced_iterative_expansion(
+        llm=llm,
+        report_content=report_content,
+        target_chars=requirements['total_target'],
+        max_iterations=8,
+        language=language
     )
 
-    if is_outline_style:
-        print("🔍 检测到大纲式内容，将进行深度学术转化...")
-
-        # 大纲式内容转化提示
-        force_expansion_prompt = f"""🚨🚨 紧急强制性任务：将以下大纲式报告转化为深度学术研究报告
-
-**当前问题诊断：**
-- 当前字数：{current_word_count}字（严重不足）
-- 目标字数：{requirements['total_target']}字
-- 需要增加：{needed_words}字
-- 内容形式：大纲式/要点列表式（需要完全转化）
-
-**原始大纲式内容：**
-{report_content}
-
-### 🚨 强制性深度转化要求（绝对不可违背）：
-
-#### 1. 消除大纲式结构
-- **绝对禁止**：保留任何"-"、"•"、"1."、"2."等列表格式
-- **必须转化**：将所有要点转化为完整的学术段落
-- **段落要求**：每个段落至少150-250字，包含完整的论证过程
-
-#### 2. 深度内容扩展
-- **理论深度**：每个观点都要从理论基础、历史背景、现实意义、未来影响四个维度展开
-- **实证支撑**：添加具体案例、数据分析、实证研究和权威引用
-- **学术论证**：每个段落必须包含主题句、论据展开、分析阐释、小结过渡
-
-#### 3. 学术写作标准
-- **连贯叙述**：采用连贯的学术叙述风格，而不是条目式表达
-- **逻辑严密**：确保段落间、章节间有清晰的逻辑过渡和内在联系
-- **语言专业**：使用严谨的学术表达，避免口语化或简化表述
-
-#### 4. 字数强制要求
-- **总字数**：必须达到{requirements['total_target']}字
-- **主章节**：每个主要章节至少{requirements['main_section_min']}字
-- **子章节**：每个子章节至少{requirements['sub_section_min']}字
-- **段落密度**：每个子章节必须包含至少4-6个完整段落
-
-#### 5. 质量标准
-- **学术水平**：必须达到硕士论文或学术期刊的质量标准
-- **内容充实**：提供详尽的理论分析、实证支撑、案例说明
-- **创新见解**：体现批判性思维和创新性学术观点
-
-🎯 **执行指令**：请立即将上述大纲式内容完全转化为深度学术研究报告，确保达到{requirements['total_target']}字的硬性要求。"""
-
+    final_word_count = count_chinese_and_english_chars(expanded_report)
+    if final_word_count >= requirements['total_min']:
+        print(f"✅ 优化迭代扩展成功：{final_word_count} >= {requirements['total_min']}")
+        return expanded_report
     else:
-        # 非大纲式内容的常规扩展提示
-        force_expansion_prompt = f"""🚨🚨 紧急强制性要求：以下报告字数严重不足，必须立即扩展至{requirements['total_target']}字：
-
-当前字数：{current_word_count}字
-目标字数：{requirements['total_target']}字
-需要增加：{needed_words}字
-
-{report_content}
-
-### 强制性全文扩展要求：
-🔥 绝对必须达到{requirements['total_target']}字，这是不可违背的硬性要求
-📝 必须大幅扩展每个章节的内容深度和广度
-💡 必须为每个主要章节添加更多子章节和段落
-🎓 必须确保学术深度，达到硕士论文或学术期刊水平
-📊 必须添加更多具体案例、数据分析、理论阐述和实证研究
-🎯 执行要求：在扩展过程中必须时刻监控字数，确保达到{requirements['total_target']}字目标
-💪 强化指令：每个主要章节至少{requirements['main_section_min']}字，每个子章节至少{requirements['sub_section_min']}字
-
-请立即生成扩展后的完整报告，确保达到{requirements['total_target']}字要求："""
-
-    try:
-        force_llm = llm.with_config({"max_tokens": 120000, "temperature": 0.4})  # 【增强】提高强制扩展的max_tokens
-        response = await force_llm.ainvoke(force_expansion_prompt)
-        expanded_report = response.content.strip()
-
-        # 验证扩展后的字数
-        final_word_count = len(expanded_report)
-        if final_word_count >= requirements['total_min']:
-            print(f"✅ 强制扩展成功：{final_word_count} >= {requirements['total_min']}")
-
-            # 如果是大纲式转化，进行额外验证
-            if is_outline_style:
-                # 检查是否还有大纲式残留
-                remaining_outline = (
-                    expanded_report.count('- ') > 5 or
-                    expanded_report.count('•') > 5 or
-                    expanded_report.count('\n1.') > 3
-                )
-                if remaining_outline:
-                    print("⚠️ 检测到大纲式残留，进行二次深度转化...")
-
-                    second_transform_prompt = f"""🚨 检测到以下报告仍有大纲式残留，必须完全消除：
-
-{expanded_report}
-
-### 🔥 二次深度转化要求：
-- **完全消除**：所有"-"、"•"、"1."、"2."等列表格式
-- **全部转化**：将剩余的要点转化为完整的学术段落
-- **深度扩展**：每个段落至少150-250字
-- **学术标准**：必须达到硕士论文质量水平
-
-请立即生成完全消除大纲式结构的深度学术报告："""
-
-                    second_response = await force_llm.ainvoke(second_transform_prompt)
-                    expanded_report = second_response.content.strip()
-                    print(f"✅ 二次转化完成，最终字数：{len(expanded_report)}")
-
-            return expanded_report
-        else:
-            print(f"⚠️ 强制扩展后仍不足：{final_word_count} < {requirements['total_min']}，进行二次扩展...")
-
-            # 二次扩展
-            second_expansion_prompt = f"""🚨🚨 二次强制扩展：报告字数仍然不足，必须立即达到{requirements['total_target']}字：
-
-当前字数：{final_word_count}字
-目标字数：{requirements['total_target']}字
-仍需增加：{requirements['total_target'] - final_word_count}字
-
-{expanded_report}
-
-### 🔥 二次扩展强制要求：
-- **绝对必须**：达到{requirements['total_target']}字，这是最后机会
-- **深度扩展**：大幅增加每个章节的内容深度
-- **学术质量**：确保每个段落都有充分的论述和分析
-- **完整论证**：每个观点都要提供详细的理论分析和实证支撑
-
-请立即生成达到{requirements['total_target']}字要求的完整报告："""
-
-            second_response = await force_llm.ainvoke(second_expansion_prompt)
-            final_expanded_report = second_response.content.strip()
-            final_final_word_count = len(final_expanded_report)
-
-            if final_final_word_count >= requirements['total_min']:
-                print(f"✅ 二次扩展成功：{final_final_word_count} >= {requirements['total_min']}")
-                return final_expanded_report
-            else:
-                print(f"⚠️ 二次扩展后仍不足：{final_final_word_count} < {requirements['total_min']}")
-                return final_expanded_report  # 返回最好的版本
-
-    except Exception as e:
-        print(f"❌ 强制扩展失败: {e}")
-        return report_content  # 返回原始版本
+        print(f"⚠️ 迭代扩展后仍不足：{final_word_count} < {requirements['total_min']}，返回最佳版本")
+        return expanded_report
 
 async def expand_key_sections(
     llm: ChatOpenAI,

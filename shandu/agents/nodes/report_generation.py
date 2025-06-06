@@ -535,8 +535,11 @@ JSON output:
                 # If generate_initial_report directly uses SYSTEM_PROMPTS["report_generation"],
                 # it would need to format it with style_instructions.
                 # For this subtask, we pass it as an argument.
-                # 【修复】添加字数控制指令到初始报告生成
+                # 【修复】添加字数控制指令到初始报告生成，增加参数验证
                 current_detail_level = state.get('detail_level', 'standard')
+                if not current_detail_level or not isinstance(current_detail_level, str):
+                    current_detail_level = 'standard'
+                    console.print(f"[yellow]Warning: Invalid detail_level in state, using 'standard'[/]")
                 length_instruction = _get_length_instruction(current_detail_level)
 
                 initial_report = await generate_initial_report(
@@ -662,6 +665,9 @@ async def enhance_report_node(llm, progress_callback, state: AgentState) -> Agen
                     report_template_style = state.get('report_template', "standard")
                     style_instructions = get_report_style_guidelines(language).get(report_template_style, get_report_style_guidelines(language)['standard'])
                     current_detail_level = state.get('detail_level', 'standard')
+                    if not current_detail_level or not isinstance(current_detail_level, str):
+                        current_detail_level = 'standard'
+                        console.print(f"[yellow]Warning: Invalid detail_level in enhance_report_node, using 'standard'[/]")
                     length_instruction = _get_length_instruction(current_detail_level)
 
                     # Call the refactored enhance_report function from report_generator
@@ -710,29 +716,42 @@ async def enhance_report_node(llm, progress_callback, state: AgentState) -> Agen
     validation = validate_report_quality(enhanced_report_str, current_detail_level)
 
     if not validation["is_valid"]:
-        console.print("[yellow]检测到报告质量问题，开始自动修复...[/]")
+        console.print("[yellow]检测到报告质量问题，开始智能修复...[/]")
         for issue in validation["issues"]:
             console.print(f"[yellow]   - {issue}[/]")
 
-        # 自动扩展过短的章节
+        # 使用优化的迭代扩展算法进行智能修复
         try:
-            # 【修复】传递字数控制指令到章节扩展函数
-            enhanced_report_str = await expand_short_sections(
-                llm,
-                enhanced_report_str,
-                current_detail_level,
-                state.get('language', 'zh'),
-                length_instruction  # 【新增】传递字数控制指令
+            from shandu.agents.processors.report_generator import force_word_count_compliance
+
+            console.print("[blue]🚀 启动优化迭代扩展算法...[/]")
+            enhanced_report_str = await force_word_count_compliance(
+                llm=llm,
+                report_content=enhanced_report_str,
+                detail_level=current_detail_level,
+                language=state.get('language', 'zh')
             )
 
             # 重新验证
             final_validation = validate_report_quality(enhanced_report_str, current_detail_level)
             if final_validation["is_valid"]:
-                console.print(f"[green]✅ 报告质量修复成功 (总字数: {final_validation['analysis']['total_words']})[/]")
+                console.print(f"[green]✅ 智能修复成功 (总字数: {final_validation['analysis']['total_words']})[/]")
             else:
-                console.print("[yellow]⚠️ 部分质量问题仍然存在，但报告已得到改善[/]")
+                console.print(f"[yellow]⚠️ 部分质量问题仍然存在，但报告已显著改善 (总字数: {final_validation['analysis']['total_words']})[/]")
         except Exception as e:
-            console.print(f"[red]自动修复过程中出现错误: {e}[/]")
+            console.print(f"[red]智能修复过程中出现错误: {e}[/]")
+            # 回退到原有的扩展方法
+            try:
+                enhanced_report_str = await expand_short_sections(
+                    llm,
+                    enhanced_report_str,
+                    current_detail_level,
+                    state.get('language', 'zh'),
+                    length_instruction
+                )
+                console.print("[yellow]已回退到传统扩展方法[/]")
+            except Exception as fallback_e:
+                console.print(f"[red]回退方法也失败: {fallback_e}[/]")
     else:
         console.print(f"[green]✅ 报告质量验证通过 (总字数: {validation['analysis']['total_words']})[/]")
 
@@ -807,6 +826,9 @@ async def expand_key_sections_node(llm, progress_callback, state: AgentState) ->
         report_template_style = state.get('report_template', "standard")
         style_instructions = get_report_style_guidelines(language).get(report_template_style, get_report_style_guidelines(language)['standard'])
         current_detail_level = state.get('detail_level', 'standard')
+        if not current_detail_level or not isinstance(current_detail_level, str):
+            current_detail_level = 'standard'
+            console.print(f"[yellow]Warning: Invalid detail_level in expand_key_sections_node, using 'standard'[/]")
         length_instruction = _get_length_instruction(current_detail_level)
         citation_registry = state.get("citation_registry")
         current_date = state.get("current_date", "")
@@ -904,6 +926,9 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
 
         # 【修复】添加字数控制指令到回退报告生成
         current_detail_level_fallback = state.get('detail_level', 'standard')
+        if not current_detail_level_fallback or not isinstance(current_detail_level_fallback, str):
+            current_detail_level_fallback = 'standard'
+            console.print(f"[yellow]Warning: Invalid detail_level in fallback report generation, using 'standard'[/]")
         length_instruction_fallback = _get_length_instruction(current_detail_level_fallback)
 
         initial_report = await generate_initial_report(

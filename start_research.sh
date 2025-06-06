@@ -8,7 +8,7 @@
 # --report-type: 报告类型（standard, academic, business, literature_review）
 # --report-detail: 详细程度（brief, standard, detailed, 或 custom_WORDCOUNT）
 
-shandu research "西游记中的权力之争" \
+shandu research "西游记中的十大妖怪" \
     --depth 2 \
     --breadth 3 \
     --output output/xiyou_report.md \

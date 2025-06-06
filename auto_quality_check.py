@@ -37,7 +37,7 @@ def check_and_fix_report(report_path, detail_level="detailed", auto_fix=True):
         
         print(f"📋 质量验证结果:")
         print(f"   是否合格: {'✅' if validation['is_valid'] else '❌'}")
-        print(f"   总字数: {validation['analysis']['total_words']}")
+        print(f"   总字数: {validation['analysis']['total_chars']}")
         print(f"   章节数: {validation['analysis']['section_count']}")
         
         issues_found = False
@@ -91,7 +91,7 @@ def check_and_fix_report(report_path, detail_level="detailed", auto_fix=True):
             final_validation = validate_report_quality(content, detail_level)
             print(f"\n🎯 最终验证结果:")
             print(f"   是否合格: {'✅' if final_validation['is_valid'] else '❌'}")
-            print(f"   总字数: {final_validation['analysis']['total_words']}")
+            print(f"   总字数: {final_validation['analysis']['total_chars']}")
             
             if final_validation['is_valid']:
                 print("🎉 报告质量修复成功！")

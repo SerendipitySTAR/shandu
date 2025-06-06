@@ -200,13 +200,13 @@ class ResearchGraph:
             )
     
     def research_sync(
-        self, 
-        query: str, 
-        depth: int = 2, 
-        breadth: int = 4, 
+        self,
+        query: str,
+        depth: int = 2,
+        breadth: int = 4,
         progress_callback: Optional[Callable[[AgentState], None]] = None,
         include_objective: bool = False,
-        detail_level: str = "high",
+        detail_level: str = "standard",  # 修复：默认值改为"standard"
         chart_theme: Optional[str] = "default",
         chart_colors: Optional[str] = None,
         report_template: str = "standard",
